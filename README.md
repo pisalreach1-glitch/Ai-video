@@ -1,228 +1,192 @@
-# 🎬 Telegram Bot: AI Video Auto-Cut & Creative Remotion Subtitles
+# 🎬 Telegram Voiceover Bot (Khmer AI Voiceover & Subtitles)
 
-An automated video editing Telegram bot powered by **Remotion (React)**, **Google Gemini AI**, and **Faster-Whisper**. It creates short-form vertical viral videos with word-by-word subtitles, kinetic animations, audio ducking, automated SFX, smart silence cuts, and visual story overlays.
-
----
-
-## 💻 System Requirements & Supported Versions
-
-| Dependency | Supported Version | Notes |
-|---|---|---|
-| **Python** | `3.10` – `3.12+` (Tested on `3.12.10`) | Backend orchestrator, Telegram handlers, Whisper |
-| **Node.js** | `v18.0.0` – `v20.x+` (Tested on `v20.18.0`) | Remotion engine runtime |
-| **npm** | `9.x` – `10.x+` | Package manager |
-| **FFmpeg** | `4.4+` – `7.x+` (or bundled `imageio-ffmpeg`) | Audio/Video processing & probe |
+A button-first Telegram Bot built with **Python 3.10+**, **aiogram 3**, **Edge-TTS**, **FFmpeg**, and **SQLite**. It turns uploaded videos or public links into viral voiceover videos with automatic AI narration in Khmer, animated subtitles, framing options, audio mixing, and realistic previews.
 
 ---
 
-## 🚀 Installation & Setup
+## ✨ Features & User Workflow
 
-### 1. Clone & Set Up Python Environment
+```
+Video Upload OR Public Link
+        ↓
+Narration Text (from caption or sent as message)
+        ↓
+Voice & Video Settings (Defaults or Customize)
+        ↓
+Audio Preview (listen to generated AI voice)
+        ↓
+Video Preview (5-second realistic preview)
+        ↓
+Approve & Final Render
+        ↓
+Final MP4 + SRT Subtitles Delivery
+```
+
+- **🎙️ Natural Khmer Voices:** Real Edge-TTS `km-KH-SreymomNeural` (female) and `km-KH-PisethNeural` (male) with rate adjustments (-15%, 1.0x, +15%).
+- **📝 High-Precision Subtitles:** Sentence/phrase timing events, styled ASS subtitles burned with bundled `Khmer OS Battambang` font, plus downloadable `.srt` files.
+- **📐 Aspect Ratio & Framing:** Original ratio, vertical 9:16 (TikTok/Reel), or square 1:1, using fit (letterbox pad) or fill (center crop).
+- **🔊 Smart Audio Mix:** Mute original audio or low-mix (duck source to 15%), gracefully handles source videos without audio.
+- **🧊 Duration Flexibility:** When source video is shorter than narration, choose between extending the final frame (freeze), looping, or shortening text.
+- **🔒 Security & Resilience:** SSRF protection on public video downloads, bounded worker queue, atomic queue claims, process-tree termination on cancellation or timeout, and delivery retry without re-rendering.
+
+---
+
+## 💻 System Requirements
+
+- **Operating System:** Windows, Linux, or macOS
+- **Python:** `3.10` – `3.12+` (Tested on `3.12.10`)
+- **FFmpeg & FFprobe:** Installed with `--enable-libass` and available in `PATH` (or specified in `.env`)
+- **Khmer Font:** Bundled at `assets/fonts/KhmerOSbattambang.ttf`
+- **Internet Connection:** Required for Telegram polling, Edge-TTS synthesis, and URL downloads
+
+---
+
+## 🚀 Installation & Quick Start
+
+### 1. Clone & Setup Virtual Environment
 ```bash
 git clone https://github.com/pisalreach1-glitch/Ai-video.git
 cd Ai-video
 
 # Create and activate virtual environment
-python -m venv venv
+python -m venv .venv
 # Windows:
-venv\Scripts\activate
+.venv\Scripts\activate
 # Linux/macOS:
-source venv/bin/activate
+source .venv/bin/activate
 
-# Install Python dependencies
+# Install dependencies
 pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
-### 2. Set Up Remotion (Node.js)
-```bash
-cd remotion
-npm install
-cd ..
-```
-
-### 3. Configure Environment Variables
-Copy `.env.example` to `.env` and fill in your keys:
+### 2. Configure Environment Variables
+Copy `.env.example` to `.env` and set your Telegram bot token:
 ```bash
 copy .env.example .env
 ```
-
-Key environment options:
+Edit `.env`:
 ```ini
-# Required
 TELEGRAM_BOT_TOKEN=123456789:ABCdef...
-
-# Optional MTProto (Required for videos > 20MB/50MB up to 2GB)
-TELEGRAM_API_ID=your_api_id
-TELEGRAM_API_HASH=your_api_hash
-
-# Optional Google Gemini (Cloud transcription & Mode 2 director)
-GEMINI_API_KEY=your_gemini_api_key
-GEMINI_MODEL=gemini-2.5-flash
-
-# Local Whisper Model (Offline / fallback mode)
-WHISPER_MODEL=base
-
-# Subprocess & Job Controls
-FFMPEG_TIMEOUT=180.0
-REMOTION_RENDER_TIMEOUT=600.0
-JOB_RETENTION_HOURS=24.0
-MAX_CONCURRENT_JOBS=2
-MAX_USER_CONCURRENT_JOBS=1
+RUNTIME_DIR=runtime
+MAX_MEDIA_MB=50
+MAX_VIDEO_SECONDS=300
+MAX_NARRATION_CHARS=2000
+MAX_CONCURRENT_JOBS=1
+JOB_RETENTION_HOURS=24
 ```
 
----
-
-## 🎨 Asset Generation Commands
-
-The repository includes standalone scripts to generate background music, sound effects, and font catalogs:
-
-- **Generate SFX Catalog:**
-  ```bash
-  python generate_sfx.py
-  ```
-- **Generate Background Audio / BGM Library:**
-  ```bash
-  python generate_bgm.py
-  ```
-- **Generate AI Story Visuals / B-Roll:**
-  ```bash
-  python image_story_generator.py
-  ```
-
----
-
-## 🎙️ Local Whisper Mode vs. Optional Gemini Mode
-
-| Feature | Local Whisper Mode | Google Gemini Cloud Mode |
-|---|---|---|
-| **API Key Required** | ❌ No API key needed | ✅ Requires `GEMINI_API_KEY` |
-| **Cost** | 100% Free / Local | Google Gemini Free / Pay-as-you-go |
-| **Languages** | Multilingual (Khmer, English, etc.) | High-accuracy Khmer & Multilingual |
-| **Failover / Fallback** | Default offline baseline | Automatically falls back to Whisper on quota/network issues |
-| **Internet Dependency** | Works offline once weights are loaded | Requires internet access |
-
----
-
-## 📦 Telegram Bot API vs. Optional MTProto Requirements
-
-- **Telegram Bot API (Default):**
-  - Download limit: `20 MB`
-  - Upload limit: `50 MB`
-  - Suitable for short low-bitrate clips.
-- **Pyrogram MTProto (High-Performance 2GB Mode):**
-  - Download & Upload limit: up to `2,000 MB (2 GB)`
-  - Requires `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` from [my.telegram.org](https://my.telegram.org).
-  - Recommended for full HD / 4K smartphone videos.
-
----
-
-## ⚙️ Operational Behavior: Startup, Shutdown, Cancellation & Cleanup
-
-### 1. Startup & Running
-Run the bot via script or terminal:
+### 3. Verify System Health (Preflight Check)
+Run the automated preflight check script:
 ```bash
-# Windows
-start_bot.bat
-
-# Or terminal
-python bot.py
+python scripts/check_environment.py
 ```
-On startup:
-- Tests FFmpeg executable path.
-- Connects Telegram Bot application and optional Pyrogram MTProto client.
-- Starts the non-blocking background cleanup task.
 
-### 2. User Experience & Commands
-- `/start` — Welcome guide, workflow overview, and instructions.
-- `/status` — Displays current job ID, active progress, queue position, system concurrency, and retention policy.
-- `/cancel` — Immediately terminates running FFmpeg / Node process trees and cancels queued jobs.
-- `/new` — Resets the user's active session, allowing fresh video submissions.
-- `/help` — Detailed instructions on subtitle editing and syntax.
+### 4. Start the Bot
+- **Windows Batch Script:** Double-click or run:
+  ```cmd
+  start_bot.bat
+  ```
+- **Command Line:**
+  ```bash
+  python bot.py
+  ```
 
-### 3. Process Cancellation
-- Merely cancelling an asyncio Future is **not** sufficient: the bot registers the active OS process ID (PID) of running FFmpeg / Node / Chromium processes and recursively terminates the entire process tree using `psutil`.
-
-### 4. Retention & Cleanup Policy
-- Configurable via `JOB_RETENTION_HOURS` (default: 24 hours).
-- **Never deletes active or queued jobs:** Running and queued job directories are strictly protected.
-- Expired job folders, generated props, and previews older than the retention threshold are swept periodically every 30 minutes.
-- Path traversal guards prevent deletion outside designated temp/cache roots.
-
-### 5. Graceful Shutdown & Restart Recovery
-To stop the bot cleanly:
-```bash
-# Windows
+To stop the bot on Windows:
+```cmd
 stop_bot.bat
 ```
-Gracefully shuts down the background worker pool, MTProto session, and Telegram polling.
-
-#### Restart Recovery:
-- On startup, `db.recover_interrupted_jobs()` automatically identifies any in-progress jobs that were interrupted by a system shutdown or reboot, and sets their status to `interrupted`.
-- Unfinished jobs are **never** labeled completed.
 
 ---
 
-## 🧙‍♂️ 5-Step Video Wizard & Navigation
+## 🧪 Running Automated Tests
 
-The bot separates interactive wizard state from background rendering job state:
+Run the full automated test suite (all 13 test suites):
+```bash
+python -m pytest -v
+```
 
-1. **Step 1 (`mode`):** Choose between Auto, Quick Viral Pop, Motion Explainer, or Custom AI Agent.
-2. **Step 2 (`upload`):** Upload video up to 2GB via MTProto or Telegram Bot API.
-3. **Step 3 (`style`):** Select visual theme (TikTok Viral, Bold Gold, Clean White), custom font, and BGM track.
-4. **Step 4 (`length`):** Set target pacing: Auto (smart silence cut), Short (<30s), Medium (<60s), or Full.
-5. **Step 5 (`review`):** Comprehensive summary with optional custom instructions, and `[ 🚀 Confirm & Start Render ]`.
-
-### Non-Destructive Navigation:
-- **`[ ⬅️ Back ]`:** Moves back a step without losing uploaded media or chosen styles.
-- **`[ 🏠 Main Menu ]`:** Returns to main menu without silently cancelling active background jobs.
-- **`[ ⏯️ Resume ]`:** If an active or approval-pending job exists, `/start` and the main menu provide a one-click Resume button.
-
----
-
-## 🛡️ Sandbox Security & Execution Isolation
-
-- **Secret Scrubbing:** Sensitive environment variables (`TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, `TELEGRAM_API_HASH`, etc.) are explicitly scrubbed from the subprocess environment before passing to Remotion CLI.
-- **Composition Whitelist:** Only approved compositions (`ShortComposition`, `PreviewComposition`) can be executed.
-- **Props Validation:** Guard against path traversal in `videoSrc` or overlay image paths.
-- **Zero Arbitrary Installs:** The rendering runtime does not automatically install unverified npm packages.
-- **Bounded Retries:** If Remotion rendering experiences an unexpected transient failure, it retries a bounded maximum of 2 times before failing cleanly.
+Test suites included:
+- `tests/test_navigation.py`: Keyboard callbacks, session isolation, and resume flow.
+- `tests/test_link_downloads.py`: SSRF prevention and streaming byte limits.
+- `tests/test_tts.py`: Live Khmer voice discovery and timing event extraction.
+- `tests/test_subtitles.py`: Phrase grouping, SRT formatting, and styled ASS cues.
+- `tests/test_duration_policy.py`: Video trim, freeze final frame (`tpad`), and looping.
+- `tests/test_audio_mix.py`: AI-only voice, low source ducking, and source without audio.
+- `tests/test_output_formats.py`: 9:16 vertical, 1:1 square, and original ratios.
+- `tests/test_preferences.py`: User preference defaults, restoration, and job snapshot isolation.
+- `tests/test_revision_cache.py`: Revision cache invalidation rules and revision counters.
+- `tests/test_approval.py`: Double-click prevention, atomic queue claims, outdated revision rejection.
+- `tests/test_cancellation.py`: Process-tree termination (`kill_process_tree`) and cancellation state.
+- `tests/test_delivery.py`: Upload success, delivery failure handling, and retry without re-rendering.
+- `tests/test_smoke_render.py`: Full end-to-end render on synthetic media with subtitle burning.
 
 ---
 
-## 🤖 Antigravity Agent Bridge & Assisted Fallback
+## 📂 Project Architecture
 
-- The bot checks `ANTIGRAVITY_BRIDGE_ENABLED` (defaults to `false` without external cloud sidecars).
-- When custom agent features are requested without a live automated sidecar bridge, the bot honestly degrades to assisted mode:
-  - Generates structured pair-programming briefs (`agent_brief.md` and `agent_brief.json`).
-  - Sets job state to `awaiting_manual_agent`.
-  - Allows immediate one-click fallback to standard template rendering.
+```
+Ai-video/
+  bot.py                      # Clean application launcher
+  requirements.txt            # Runtime dependencies
+  requirements-dev.txt        # Development & test dependencies
+  .env.example                # Configuration template
+  .gitignore                  # Git ignore rules
+  README.md                   # Documentation
+  start_bot.bat               # Windows startup script
+  stop_bot.bat                # Windows shutdown script
 
----
+  app/
+    main.py                   # Startup/shutdown, dispatcher, polling
+    config.py                 # Configuration loader and validator
 
-## ⚠️ Actual Limitations & Expectations
+    handlers/
+      start.py                # /start, /help, main menu, my settings
+      navigation.py           # Back, home, resume flow
+      uploads.py              # Telegram video/file receiving & caption prompt
+      links.py                # Public video URL input, SSRF checks, download
+      narration.py            # Khmer text validation & confirmation
+      settings.py             # Voice, speed, subtitle, audio, format menus
+      previews.py             # Audio preview, video preview, approval
+      jobs.py                 # Cancel, retry delivery, download MP4/SRT
+      history.py              # User video history with pagination
 
-1. **AI-Generated Subtitles:**
-   Speech-to-text is performed by AI and can make mistakes on background noise, fast colloquial slang, or indistinct accents. Users are strongly advised to review and edit subtitle lines before initiating rendering.
-2. **Estimated Render Time:**
-   Rendering time depends on hardware capability (CPU cores, GPU NVENC support) and input video duration/resolution. Typical renders take from under a minute up to several minutes for longer 4K videos.
-3. **Queue Limits & Concurrency:**
-   To preserve local PC stability, default configuration enforces `MAX_RENDER_CONCURRENCY=1`, `1` active job per user, and a bounded queue size of `20` jobs in SQLite.
+    ui/
+      keyboards.py            # Inline keyboards
+      texts_km.py             # Khmer language message templates
+      options.py              # UI option constants and labels
 
----
+    domain/
+      models.py               # Job, Revision, VoiceSettings, MediaInfo
+      states.py               # JobState and WizardStep FSM
 
-## 📦 Delivery Resilience & Audit Verification (42 Tests)
+    services/
+      downloader.py           # Direct URL download + yt-dlp fallback
+      voices.py               # Edge-TTS voice discovery and sample caching
+      tts.py                  # Khmer TTS audio & timing event generator
+      subtitles.py            # SRT and styled ASS subtitle generation
+      media.py                # FFmpeg probing, aspect framing, duration filters
+      previews.py             # 5-second realistic video preview renderer
+      render.py               # Final MP4 render & decodability validation
+      delivery.py             # Telegram upload & delivery failure recovery
 
-1. **Delivery Failure Guarantee:**
-   - If Telegram `send_video` fails (e.g. timeout, 50MB Bot API limit, connection reset), the job status is set to `delivery_failed` and is **never** falsely marked `completed`.
-   - The rendered MP4 output path is safely preserved on the local filesystem.
-   - An interactive `[ 🔄 ព្យាយាមផ្ញើវីដេអូម្តងទៀត (Retry Delivery) ]` button allows resending without rerendering.
-2. **Real Preview Snippet (`Upload → Preview → Approve → MP4`):**
-   - Before full render, a 5-second burned subtitle preview video clip is generated and delivered to the user.
-   - The user reviews the actual video and font style before clicking `[ 🚀 យល់ព្រម Render វីដេអូពេញលេញ (Approve) ]`.
-3. **Atomic Job Claiming:**
-   - Jobs are claimed from SQLite using atomic transactions with revision guards, preventing race conditions under concurrency.
-4. **Duration & Custom Prompt Slicing:**
-   - Target pacing (`short_30s`, `medium_60s`, `full`) slices speech transcript accurately.
-   - Custom prompts guide visual story scene extraction.
-5. **Automated Verification:**
-   - 42 comprehensive unit, integration, and smoke tests pass cleanly with mocked external APIs.
+    jobs/
+      worker.py               # Concurrency-controlled render queue worker
+      processes.py            # Async subprocess runner with process-tree cancellation
+
+    storage/
+      database.py             # SQLite WAL database & atomic transactions
+      sessions.py             # Per user & chat session persistence
+      preferences.py          # User default settings persistence
+      jobs.py                 # Atomic job, revision, and queue storage
+      workspaces.py           # Job directory & revision file layout
+      cleanup.py              # Retention policy cleanup
+
+  assets/
+    fonts/                    # Redistributable Khmer fonts (KhmerOSbattambang.ttf)
+
+  scripts/
+    check_environment.py      # Preflight system verification script
+
+  tests/                      # 13 automated test suites (all passing)
+```

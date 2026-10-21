@@ -1,0 +1,94 @@
+"""Configuration loader and validator."""
+import os
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
+
+@dataclass(frozen=True)
+class Settings:
+    telegram_bot_token: str
+    ffmpeg_path: str
+    ffprobe_path: str
+    runtime_dir: Path
+    db_path: Path
+    khmer_font_path: Path
+    job_retention_hours: float
+    max_queue_size: int
+    max_media_mb: int
+    max_video_seconds: int
+    max_narration_chars: int
+    max_concurrent_jobs: int
+    download_timeout_seconds: int
+    subprocess_timeout_seconds: int
+
+def _find_binary(name: str, explicit_path: str | None = None) -> str:
+    """Locate binary path or raise error."""
+    if explicit_path and os.path.exists(explicit_path):
+        return explicit_path
+    
+    found = shutil.which(name)
+    if found:
+        return found
+    
+    # Try imageio_ffmpeg fallback for ffmpeg
+    if name == "ffmpeg":
+        try:
+            import imageio_ffmpeg
+            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+            if ffmpeg_exe and os.path.exists(ffmpeg_exe):
+                return ffmpeg_exe
+        except ImportError:
+            pass
+
+    return name
+
+def load_settings() -> Settings:
+    """Load and validate settings from environment."""
+    token = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN") or ""
+    
+    runtime_dir = Path(os.getenv("RUNTIME_DIR", "runtime")).resolve()
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    db_path = runtime_dir / "state.sqlite3"
+    
+    ffmpeg_explicit = os.getenv("FFMPEG_PATH", "").strip() or None
+    ffprobe_explicit = os.getenv("FFPROBE_PATH", "").strip() or None
+
+    ffmpeg_path = _find_binary("ffmpeg", ffmpeg_explicit)
+    ffprobe_path = _find_binary("ffprobe", ffprobe_explicit)
+
+    font_path_raw = os.getenv("KHMER_FONT_PATH", "assets/fonts/KhmerOSbattambang.ttf")
+    font_path = Path(font_path_raw).resolve()
+    if not font_path.exists():
+        # Fallback to any TTF in assets/fonts or Windows Fonts
+        alt_fonts = [
+            Path("assets/fonts/Siemreap.ttf").resolve(),
+            Path("C:/Windows/Fonts/KhmerOSbattambang.ttf"),
+            Path("C:/Windows/Fonts/KhmerOS.ttf"),
+        ]
+        for alt in alt_fonts:
+            if alt.exists():
+                font_path = alt
+                break
+
+    return Settings(
+        telegram_bot_token=token,
+        ffmpeg_path=ffmpeg_path,
+        ffprobe_path=ffprobe_path,
+        runtime_dir=runtime_dir,
+        db_path=db_path,
+        khmer_font_path=font_path,
+        job_retention_hours=float(os.getenv("JOB_RETENTION_HOURS", "24")),
+        max_queue_size=int(os.getenv("MAX_QUEUE_SIZE", "10")),
+        max_media_mb=int(os.getenv("MAX_MEDIA_MB", "50")),
+        max_video_seconds=int(os.getenv("MAX_VIDEO_SECONDS", "300")),
+        max_narration_chars=int(os.getenv("MAX_NARRATION_CHARS", "2000")),
+        max_concurrent_jobs=int(os.getenv("MAX_CONCURRENT_JOBS", "1")),
+        download_timeout_seconds=int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "120")),
+        subprocess_timeout_seconds=int(os.getenv("SUBPROCESS_TIMEOUT_SECONDS", "300")),
+    )
+
+config = load_settings()
