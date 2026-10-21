@@ -104,6 +104,20 @@ def group_and_validate_segments(
 
     return result
 
+def _patch_pyav_if_needed() -> None:
+    """Ensure older PyAV versions without metadata_errors keyword argument do not crash."""
+    try:
+        import av
+        if hasattr(av, "open") and not getattr(av, "_patched_metadata_errors", False):
+            orig_open = av.open
+            def safe_open(*args, **kwargs):
+                kwargs.pop("metadata_errors", None)
+                return orig_open(*args, **kwargs)
+            av.open = safe_open
+            av._patched_metadata_errors = True
+    except Exception:
+        pass
+
 def _sync_transcribe(
     audio_path: str,
     video_duration_ms: int,
@@ -112,6 +126,7 @@ def _sync_transcribe(
     compute_type: str,
 ) -> list[dict[str, Any]]:
     """Synchronous transcription using faster_whisper."""
+    _patch_pyav_if_needed()
     try:
         from faster_whisper import WhisperModel
     except ImportError:

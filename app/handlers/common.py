@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 async def safe_edit_message(call: CallbackQuery, text: str, reply_markup=None) -> None:
     """
     Safely edit message text or caption, or send a new message if editing fails.
-    Prevents TelegramBadRequest 'there is no text in the message to edit'.
+    Prevents TelegramBadRequest 'there is no text in the message to edit' and entity parsing errors.
     """
     msg = call.message
     if msg.video or msg.document or msg.photo:
@@ -20,11 +20,20 @@ async def safe_edit_message(call: CallbackQuery, text: str, reply_markup=None) -
         except Exception as e:
             if "message is not modified" in str(e).lower():
                 return
+            if "can't parse entities" in str(e).lower():
+                try:
+                    await msg.edit_caption(caption=text, reply_markup=reply_markup, parse_mode=None)
+                    return
+                except Exception:
+                    pass
             try:
                 await msg.edit_reply_markup(reply_markup=None)
             except Exception:
                 pass
-            await msg.answer(text, reply_markup=reply_markup)
+            try:
+                await msg.answer(text, reply_markup=reply_markup)
+            except Exception:
+                await msg.answer(text, reply_markup=reply_markup, parse_mode=None)
             return
 
     try:
@@ -32,7 +41,16 @@ async def safe_edit_message(call: CallbackQuery, text: str, reply_markup=None) -
     except Exception as e:
         if "message is not modified" in str(e).lower():
             return
-        await msg.answer(text, reply_markup=reply_markup)
+        if "can't parse entities" in str(e).lower():
+            try:
+                await msg.edit_text(text, reply_markup=reply_markup, parse_mode=None)
+                return
+            except Exception:
+                pass
+        try:
+            await msg.answer(text, reply_markup=reply_markup)
+        except Exception:
+            await msg.answer(text, reply_markup=reply_markup, parse_mode=None)
 
 async def safe_edit_reply_markup(call: CallbackQuery, reply_markup=None) -> None:
     """Safely edit reply markup and ignore idempotent 'message is not modified' errors."""

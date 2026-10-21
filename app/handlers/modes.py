@@ -127,8 +127,9 @@ async def cb_choose_source_timed_dubbing(call: CallbackQuery, state: FSMContext)
     except Exception as e:
         logger.exception(f"Source-timed dubbing setup failed for job {job_id}: {e}")
         job_storage.set_job_status(job_id, JobState.AWAITING_TEXT)
+        clean_err = str(e).replace("_", " ").replace("*", " ").replace("`", "'")[:200]
         await safe_edit_message(
             call,
-            f"❌ ការវិភាគសំឡេងវីដេអូបរាជ័យ៖ {e}\n\nសូមជ្រើសរើសរបៀប Narration ថ្មីវិញ៖",
+            f"❌ ការវិភាគសំឡេងវីដេអូបរាជ័យ៖ {clean_err}\n\nសូមជ្រើសរើសរបៀប Narration ថ្មីវិញ៖",
             reply_markup=mode_choice_keyboard(job_id, has_caption=False),
         )
