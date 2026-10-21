@@ -31,6 +31,8 @@ class Settings:
     dub_max_tempo: float = 1.15
     dub_max_segments: int = 120
     translation_provider: str = "manual"
+    telegram_api_id: int | None = None
+    telegram_api_hash: str | None = None
 
 def _find_binary(name: str, explicit_path: str | None = None) -> str:
     """Locate binary path or raise error."""
@@ -91,8 +93,8 @@ def load_settings() -> Settings:
         khmer_font_path=font_path,
         job_retention_hours=float(os.getenv("JOB_RETENTION_HOURS", "24")),
         max_queue_size=int(os.getenv("MAX_QUEUE_SIZE", "10")),
-        max_media_mb=int(os.getenv("MAX_MEDIA_MB", "50")),
-        max_video_seconds=int(os.getenv("MAX_VIDEO_SECONDS", "300")),
+        max_media_mb=int(os.getenv("MAX_MEDIA_MB", "2000")),
+        max_video_seconds=int(os.getenv("MAX_VIDEO_SECONDS", "600")),
         max_narration_chars=int(os.getenv("MAX_NARRATION_CHARS", "2000")),
         max_concurrent_jobs=int(os.getenv("MAX_CONCURRENT_JOBS", "1")),
         download_timeout_seconds=int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "120")),
@@ -105,6 +107,8 @@ def load_settings() -> Settings:
         dub_max_tempo=float(os.getenv("DUB_MAX_TEMPO", "1.15")),
         dub_max_segments=int(os.getenv("DUB_MAX_SEGMENTS", "120")),
         translation_provider=os.getenv("TRANSLATION_PROVIDER", "manual"),
+        telegram_api_id=int(os.getenv("TELEGRAM_API_ID").strip()) if os.getenv("TELEGRAM_API_ID") and os.getenv("TELEGRAM_API_ID").strip().isdigit() else None,
+        telegram_api_hash=os.getenv("TELEGRAM_API_HASH", "").strip() or None,
     )
 
 config = load_settings()

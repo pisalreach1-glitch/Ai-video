@@ -103,8 +103,13 @@ async def handle_video_upload(message: Message, state: FSMContext, bot: Bot) -> 
     dest_path = workspace.get_source_video_path(job_id, ext=ext)
 
     try:
-        file_obj = await bot.get_file(file_id)
-        await bot.download_file(file_obj.file_path, destination=dest_path)
+        from app.services.tg_downloader import download_telegram_media
+        await download_telegram_media(
+            message=message,
+            destination_path=dest_path,
+            bot=bot,
+            status_msg=status_msg,
+        )
 
         # Validate with probe
         media_info = probe_media(dest_path)

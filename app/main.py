@@ -49,6 +49,11 @@ async def main() -> None:
     # Register handlers
     register_all_handlers(dp)
 
+    if config.telegram_api_id and config.telegram_api_hash:
+        logger.info("MTProto credentials configured: large video downloads (>20MB up to 2GB) are ENABLED.")
+    else:
+        logger.warning("TELEGRAM_API_ID or TELEGRAM_API_HASH missing: downloads limited to 20MB by Telegram Bot API.")
+
     # Initialize background worker pool
     worker_pool.set_bot(bot)
     worker_pool.start()
@@ -58,6 +63,8 @@ async def main() -> None:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         logger.info("Shutting down worker pool and closing sessions...")
+        from app.services.tg_downloader import stop_pyrogram_client
+        await stop_pyrogram_client()
         await worker_pool.stop()
         await bot.session.close()
         logger.info("Bot stopped cleanly.")
