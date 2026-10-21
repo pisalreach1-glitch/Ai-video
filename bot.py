@@ -27,6 +27,20 @@ from pyrogram import Client
 from video_processor import VideoProcessor
 from remotion_processor import RemotionProcessor
 from subtitle_generator import AVAILABLE_FONTS
+from job_manager import JobQueueManager, Job
+from cleanup_manager import CleanupManager, DEFAULT_RETENTION_HOURS
+from media_validator import validate_video_with_audio
+from timecode_utils import build_srt_content, format_srt_timestamp, parse_timecode
+from errors import (
+    BotProcessingError,
+    JobCancelledError,
+    ProcessTimeoutError,
+    QuotaExceededError,
+    NetworkError,
+    CorruptMediaError,
+    NoAudioStreamError,
+    NoSpeechDetectedError
+)
 
 
 # ផ្ទុក environment variables ពី .env
@@ -60,6 +74,10 @@ os.environ["HF_HOME"] = str(CACHE_DIR / "huggingface")
 os.environ["TORCH_HOME"] = str(CACHE_DIR / "torch")
 import tempfile
 tempfile.tempdir = str(TEMP_DIR)
+
+# Job & Cleanup Managers (User Isolation, Subprocess Tree Management, Configurable Retention)
+job_queue_manager = JobQueueManager(TEMP_DIR)
+cleanup_manager = CleanupManager(TEMP_DIR, CACHE_DIR, retention_hours=DEFAULT_RETENTION_HOURS)
 
 import json
 FONTS_FILE = BASE_DIR / "khmer_fonts.json"
@@ -115,28 +133,11 @@ def format_time_display(sec: float) -> str:
     s = sec % 60
     return f"{m:02d}:{s:05.2f}"
 
-def build_srt_content(words_list: list) -> str:
-    """បង្កើតទម្រង់ SRT Standard ផ្លូវការពីបញ្ជីពាក្យ/ឃ្លា"""
-    srt_blocks = []
-    for i, w in enumerate(words_list):
-        txt = str(w.get("word", "")).strip()
-        if not txt:
-            continue
-        st = max(0.0, float(w.get("start", 0)))
-        et = max(st + 0.1, float(w.get("end", st + 1.5)))
-        st_h = int(st // 3600)
-        st_m = int((st % 3600) // 60)
-        st_s = st % 60
-        et_h = int(et // 3600)
-        et_m = int((et % 3600) // 60)
-        et_s = et % 60
-        tc_str = f"{st_h:02d}:{st_m:02d}:{int(st_s):02d},{int(round((st_s % 1)*1000)):03d} --> {et_h:02d}:{et_m:02d}:{int(et_s):02d},{int(round((et_s % 1)*1000)):03d}"
-        srt_blocks.append(f"{i+1}\n{tc_str}\n{txt}\n")
-    return "\n".join(srt_blocks)
+# build_srt_content is imported from timecode_utils with millisecond rounding and rollover guarantees
 
 def process_edit_input(words: list, user_text: str):
     """
-    កែប្រែពាក្យខុសដោយរក្សា Timestamps ឱ្យត្រូវមាត់ ១០០%៖
+    កែប្រែពាក្យខុសដោយរក្សា Timestamps ឱ្យពិនិត្យផ្ទៀងផ្ទាត់មុនពេល Render៖
     1. កែទាំង Timestamp និងអត្ថបទ: "1. [00:00.50 ➔ 00:02.80] ពាក្យថ្មី"
     2. កែតាមលេខជួរ (Line Number): "2 = ពាក្យថ្មី" ឬ "2. ពាក្យថ្មី"
     3. Find & Replace: "ពាក្យចាស់ -> ពាក្យថ្មី" ឬ "ដូរ កាហ្វេ ទៅ តែ"
@@ -209,25 +210,114 @@ def process_edit_input(words: list, user_text: str):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """សារស្វាគមន៍ /start"""
     welcome_text = (
-        "👋 **ជំរាបសួរ! ខ្ញុំជា AI Video Auto-Cut & Subtitle Bot ជំនាន់ថ្មី** 🎬\n\n"
-        "⚡ **ស្រួលប្រើបំផុត៖**\n"
-        "1. គ្រាន់តែផ្ញើវីដេអូមក (គាំទ្ររហូតដល់ **2,000MB / 2 GB**)\n"
-        "2. AI នឹងផ្ញើអត្ថបទសម្ដីនិយាយតាមលេខជួរនីមួយៗ\n"
-        "3. បើត្រូវអស់ហើយ ចុច **[ 🚀 យល់ព្រម Render ]** ភ្លាម!\n"
-        "4. បើមានពាក្យខុស គ្រាន់តែផ្ញើ `ពាក្យខុស -> ពាក្យត្រូវ` ឬ `លេខជួរ = ពាក្យត្រូវ` (រក្សាត្រូវមាត់ ១០០%)!\n\n"
-        "✨ ចលនា Spring Pop + Font ខ្មែរ TikTok Viral + 12 Auto SFX + BGM Ducking ស្វ័យប្រវត្តិ។\n\n"
-        "👉 *ផ្ញើវីដេអូដើម្បីចាប់ផ្ដើមឥឡូវនេះបាន!*"
+        "👋 **ជំរាបសួរ! ខ្ញុំជា AI Video Auto-Cut & Subtitle Bot** 🎬\n\n"
+        "⚡ **លក្ខណៈពិសេសចម្បង៖**\n"
+        "• **របៀប ១ (Quick Viral Pop)៖** Word-by-Word Highlighting + Smart Cut + Auto SFX + BGM\n"
+        "• **របៀប ២ (Motion Explainer)៖** Sticker Highlights, Split-Screen & Real B-Roll Cutaways\n"
+        "• ពិនិត្យ និងកែសម្រួល Subtitle ដោយផ្ទាល់មុនពេល Render\n"
+        "• ទាញយកឯកសារ Subtitle (.SRT) ផ្លូវការ\n\n"
+        "📌 **ចំណាំសំខាន់ (Honest Notice)៖**\n"
+        "• អក្សររៀបចំដោយ AI; សូមពិនិត្យផ្ទៀងផ្ទាត់មុនពេល Render (AI-generated subtitles; review before rendering)\n"
+        "• ពេលវេលា Render អាស្រ័យលើប្រវែងវីដេអូ និងល្បឿនម៉ាស៊ីន (Estimated render time depends on video and hardware)\n\n"
+        "🛠️ **ពាក្យបញ្ជា (Commands)៖**\n"
+        "• `/status` - ពិនិត្យមើលស្ថានភាពការងារ និងជួររង់ចាំ (Queue Status)\n"
+        "• `/cancel` - បញ្ឈប់ និងបោះបង់ការងារដែលកំពុងដំណើរការ (Stop & Cancel Process)\n"
+        "• `/new` - ចាប់ផ្តើមវគ្គថ្មី (Reset Session)\n"
+        "• `/help` - មើលការណែនាំបន្ថែម\n\n"
+        "📦 **ការគាំទ្រវីដេអូទំហំធំ (MTProto Requirements)៖**\n"
+        "Telegram Bot API កម្រិតទំហំឯកសារត្រឹម 20MB/50MB។ ដើម្បីផ្ញើ និងទាញយកវីដេអូធំរហូតដល់ **2,000MB (2 GB)** សូមប្រាកដថាបានកំណត់ `TELEGRAM_API_ID` និង `TELEGRAM_API_HASH` ក្នុង `.env` (ទាញយកពី https://my.telegram.org)។\n\n"
+        "👉 *សូមផ្ញើវីដេអូមកទីនេះដើម្បីចាប់ផ្តើម!*"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ពិនិត្យស្ថានភាព Job និង Queue របស់ User (Non-blocking)"""
+    user_id = update.effective_user.id if update.effective_user else update.effective_chat.id
+    summary = job_queue_manager.get_status_summary(user_id)
+    job: Optional[Job] = summary["user_job"]
+
+    if not job:
+        status_text = (
+            "ℹ️ **ស្ថានភាពប្រព័ន្ធបច្ចុប្បន្ន (System Status)៖**\n\n"
+            "លោកអ្នកមិនមានការងារណាមួយកំពុងដំណើរការឡើយ។\n\n"
+            f"📊 **ស្ថានភាពម៉ាស៊ីនបម្រើការ៖**\n"
+            f"• ការងារកំពុងដំណើរការ (Running)៖ `{summary['total_running']} / {summary['max_concurrent']}`\n"
+            f"• ការងារក្នុងជួររង់ចាំ (Queued)៖ `{summary['total_queued']}`\n"
+            f"• គោលការណ៍រក្សាទុកទិន្នន័យ (Retention)៖ `{int(cleanup_manager.retention_seconds // 3600)} ម៉ោង`\n\n"
+            "👉 សូមផ្ញើវីដេអូមកដើម្បីចាប់ផ្តើម!"
+        )
+    else:
+        dur = job.duration_seconds()
+        status_emojis = {
+            "queued": "⏳ កំពុងរង់ចាំក្នុងជួរ (Queued)",
+            "running": "⚙️ កំពុងដំណើរការ (Running)",
+            "completed": "✅ រួចរាល់ (Completed)",
+            "failed": "❌ ជួបបញ្ហា (Failed)",
+            "cancelled": "🛑 ត្រូវបានបោះបង់ (Cancelled)"
+        }
+        st_label = status_emojis.get(job.status, job.status)
+        pos_text = f"\n• លេខរៀងក្នុងជួរ៖ `#{summary['user_queue_position']}`" if summary['user_queue_position'] > 0 else ""
+
+        status_text = (
+            f"📋 **ស្ថានភាពការងាររបស់អ្នក (Job Status)៖**\n\n"
+            f"• **Job ID:** `{job.job_id}`\n"
+            f"• **ស្ថានភាព:** {st_label}{pos_text}\n"
+            f"• **ប្រភេទ (Mode):** `{job.mode}`\n"
+            f"• **រយៈពេលដំណើរការ:** `{dur} វិនាទី`\n"
+            f"• **ការងារសរុបក្នុងប្រព័ន្ធ:** `{summary['total_running']} running, {summary['total_queued']} queued`\n\n"
+        )
+        if job.status == "running":
+            status_text += "💡 លោកអ្នកអាចប្រើពាក្យបញ្ជា `/cancel` ដើម្បីបញ្ឈប់ការងារនេះភ្លាមៗ។"
+        elif job.status == "queued":
+            status_text += "💡 ការងាររបស់អ្នកនឹងចាប់ផ្តើមដំណើរការដោយស្វ័យប្រវត្តិតាមលំដាប់លំដោយ។"
+        else:
+            status_text += "👉 ប្រើពាក្យបញ្ជា `/new` ឬផ្ញើវីដេអូថ្មីដើម្បីចាប់ផ្តើមម្តងទៀត។"
+
+    await update.message.reply_text(status_text, parse_mode="Markdown")
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """បោះបង់ការងារសកម្មភ្លាមៗ និងបញ្ឈប់ process tree"""
+    user_id = update.effective_user.id if update.effective_user else update.effective_chat.id
+    cancelled_job = job_queue_manager.cancel_job(user_id)
+    if cancelled_job:
+        await update.message.reply_text(
+            f"🛑 **[Job {cancelled_job.job_id}] ការងារត្រូវបានបោះបង់ដោយជោគជ័យ!**\n\n"
+            "ដំណើរការ Render និង subprocess ទាំងអស់ត្រូវបានបញ្ឈប់ភ្លាមៗ។ "
+            "លោកអ្នកអាចផ្ញើវីដេអូថ្មី ឬប្រើ `/new` ដើម្បីចាប់ផ្តើមម្តងទៀត។",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text(
+            "ℹ️ មិនមានការងារដែលកំពុងដំណើរការ ឬស្ថិតក្នុងជួររង់ចាំសម្រាប់បោះបង់ឡើយ។",
+            parse_mode="Markdown"
+        )
+
+async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ចាប់ផ្តើម Session ថ្មី និងសម្អាត state"""
+    user_id = update.effective_user.id if update.effective_user else update.effective_chat.id
+    cancelled = job_queue_manager.reset_user_session(user_id)
+    context.user_data.clear()
+    msg = "✨ **បានចាប់ផ្តើមវគ្គថ្មី (Session Reset) រួចរាល់!**\n\nសូមផ្ញើវីដេអូថ្មីមកកាន់ខ្ញុំដើម្បីកាត់ត និងដាក់ Subtitle 🎬"
+    if cancelled:
+        msg = f"🛑 ការងារចាស់ `[Job {cancelled.job_id}]` ត្រូវបានបោះបង់។\n\n" + msg
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """សារជំនួយ /help"""
     help_text = (
-        "ℹ️ **ការណែនាំ៖**\n\n"
-        "- **ទំហំវីដេអូ:** គាំទ្ររហូតដល់ **2,000MB (2 GB)** តាមរយៈប្រព័ន្ធ MTProto ល្បឿនលឿន\n"
-        "- **របៀបកែពាក្យខុស (ត្រូវមាត់ ១០០%):**\n"
-        "  • ផ្ញើ: `ពាក្យខុស -> ពាក្យត្រូវ` (ឧ. `កាហ្វេ -> តែបៃតង`)\n"
-        "  • ឬផ្ញើ: `លេខជួរ = ពាក្យថ្មី` (ឧ. `2 = សួស្តីបងប្អូន`)"
+        "ℹ️ **ការណែនាំអំពីការប្រើប្រាស់ Bot៖**\n\n"
+        "🛠️ **ពាក្យបញ្ជាទាំងអស់៖**\n"
+        "• `/start` - បង្ហាញសារស្វាគមន៍ និងការណែនាំ\n"
+        "• `/status` - ពិនិត្យមើលស្ថានភាពការងារ និងជួររង់ចាំ (Queue)\n"
+        "• `/cancel` - បញ្ឈប់ការងារដែលកំពុងដំណើរការភ្លាមៗ\n"
+        "• `/new` - ចាប់ផ្តើមវគ្គថ្មី (Clear Session)\n"
+        "• `/help` - បង្ហាញសារជំនួយនេះ\n\n"
+        "📝 **របៀបកែពាក្យខុសក្នុង Subtitle៖**\n"
+        "• ផ្ញើ: `ពាក្យខុស -> ពាក្យត្រូវ` (ឧ. `កាហ្វេ -> តែបៃតង`)\n"
+        "• ឬផ្ញើ: `លេខជួរ = ពាក្យថ្មី` (ឧ. `2 = សួស្តីពុកម៉ែបងប្អូន`)\n"
+        "• ឬផ្ញើ: `លេខជួរ [00:00.00 -> 00:02.50] ពាក្យថ្មី`\n\n"
+        "📦 **តម្រូវការសម្រាប់វីដេអូធំរហូតដល់ 2GB (MTProto)៖**\n"
+        "ដើម្បីទាញយក និងផ្ញើវីដេអូទំហំលើសពី 20MB/50MB សូមកំណត់ `TELEGRAM_API_ID` និង `TELEGRAM_API_HASH` ក្នុង `.env`។"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -257,11 +347,20 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-    input_filename = f"input_{chat_id}_{msg_id}.mp4"
-    output_filename = f"output_{chat_id}_{msg_id}.mp4"
-    input_path = str(TEMP_DIR / input_filename)
-    output_path = str(TEMP_DIR / output_filename)
+    user_id = message.from_user.id if message.from_user else chat_id
+    try:
+        job = job_queue_manager.create_job(user_id=user_id, chat_id=chat_id, input_filename=f"input_{msg_id}.mp4", mode="quick")
+    except BotProcessingError as q_err:
+        await status_msg.edit_text(
+            f"⚠️ **{q_err.user_friendly_message}**\n\n"
+            f"💡 ប្រើពាក្យបញ្ជា `/status` ដើម្បីមើលស្ថានភាព ឬ `/cancel` ដើម្បីបោះបង់ការងារចាស់។",
+            parse_mode="Markdown"
+        )
+        return
 
+    input_path = job.input_path
+    output_path = job.output_path
+    context.user_data["current_job_id"] = job.job_id
     context.user_data["input_path"] = input_path
     context.user_data["output_path"] = output_path
     context.user_data["pending_chat_id"] = chat_id
@@ -346,16 +445,40 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        await status_msg.edit_text("🧠 **AI កំពុងស្ដាប់សំឡេងទាញយកពាក្យសម្ដី & Timestamps...** 🎙️", parse_mode="Markdown")
+        # ត្រួតពិនិត្យភាពត្រឹមត្រូវនៃ Media និង Audio Stream
+        try:
+            validate_video_with_audio(input_path)
+        except BotProcessingError as m_err:
+            if 'job' in locals() and job:
+                job.status = "failed"
+                job.error_reason = m_err.error_code
+            logger.warning(f"[Job {getattr(job, 'job_id', 'sys')}] Media validation failed: {m_err}")
+            await status_msg.edit_text(
+                f"❌ **[Job {getattr(job, 'job_id', 'sys')}] {m_err.user_friendly_message}**",
+                parse_mode="Markdown"
+            )
+            return
+
+        await status_msg.edit_text(f"🧠 **[Job {getattr(job, 'job_id', 'sys')}] AI កំពុងស្ដាប់សំឡេងទាញយកពាក្យសម្ដី & Timestamps...** 🎙️", parse_mode="Markdown")
 
         r_proc = get_remotion_processor()
         loop = asyncio.get_running_loop()
-        words, hook_title = await loop.run_in_executor(
-            None,
-            r_proc.transcribe_video,
-            input_path,
-            None  # ស្គាល់គ្រប់ភាសាដោយស្វ័យប្រវត្តិ (Auto-detect all languages)
-        )
+        try:
+            words, hook_title = await loop.run_in_executor(
+                None,
+                lambda: r_proc.transcribe_video(
+                    input_path,
+                    None,
+                    cancel_event=job.cancel_event if 'job' in locals() and job else None,
+                    job_id=job.job_id if 'job' in locals() and job else None
+                )
+            )
+        except BotProcessingError as p_err:
+            if 'job' in locals() and job:
+                job.status = "failed"
+                job.error_reason = p_err.error_code
+            await status_msg.edit_text(f"❌ **[Job {getattr(job, 'job_id', 'sys')}] {p_err.user_friendly_message}**", parse_mode="Markdown")
+            return
 
         detected_lang = getattr(r_proc.transcriber, "detected_language", "km")
         lang_flags = {
@@ -398,7 +521,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             header = (
                 f"📝 **អត្ថបទសម្ដីនិយាយក្នុងវីដេអូ ({len(formatted_lines)} ឃ្លា)៖**\n"
                 f"🌐 **ភាសាដែល AI រកឃើញ៖** {lang_label}\n"
-                f"⏱ *Timestamps ត្រូវមាត់ ១០០% (SRT / Timecode Format)*\n\n"
+                f"⏱ *អក្សររៀបចំដោយ AI; សូមពិនិត្យផ្ទៀងផ្ទាត់មុនពេល Render (SRT / Timecode Format)*\n\n"
             )
             chunk = header
             for line_item in formatted_lines:
@@ -423,7 +546,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         guide_text = (
-            "💡 **របៀបកែពាក្យខុសឱ្យត្រូវមាត់ ១០០% (ជ្រើសមួយណាក៏បាន)៖**\n\n"
+            "💡 **របៀបកែពាក្យខុសឱ្យពិនិត្យផ្ទៀងផ្ទាត់មុនពេល Render (ជ្រើសមួយណាក៏បាន)៖**\n\n"
             "👉 **វិធីទី ១ (ស្រួលបំផុត) ៖** ផ្ញើ «ពាក្យខុស -> ពាក្យត្រូវ»\n"
             "   *(ឧទាហរណ៍៖ `កាហ្វេ -> តែបៃតង`)*\n\n"
             "👉 **វិធីទី ២ ៖** កែតាមលេខជួរ «លេខជួរ = ពាក្យថ្មី»\n"
@@ -585,7 +708,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        f"✅ **បានកែសម្រួលដោយជោគជ័យ (រក្សា Timestamps ត្រូវមាត់ ១០០%)៖**\n\n"
+        f"✅ **បានកែសម្រួលដោយជោគជ័យ (រក្សា អក្សររៀបចំដោយ AI; សូមពិនិត្យផ្ទៀងផ្ទាត់មុនពេល Render)៖**\n\n"
         f"{changes_summary}\n\n"
         f"{prompt_txt}",
         reply_markup=reply_markup,
@@ -866,7 +989,25 @@ async def handle_render_action(update: Update, context: ContextTypes.DEFAULT_TYP
     lang_label = context.user_data.get("lang_label", "ភាសាខ្មែរ 🇰🇭")
     chat_id = context.user_data.get("pending_chat_id", query.message.chat_id)
 
+    user_id = update.effective_user.id if update.effective_user else query.message.chat_id
+    current_job_id = context.user_data.get("current_job_id")
+    if not job_queue_manager.validate_callback(user_id, current_job_id):
+        await query.message.reply_text(
+            "⚠️ **ប៊ូតុងនេះផុតសុពលភាពហើយ!**\n"
+            "សកម្មភាពនេះជាកម្មសិទ្ធិរបស់ Job ចាស់។ សូមប្រើប្រាស់សារចុងក្រោយបង្អស់។",
+            parse_mode="Markdown"
+        )
+        return
+
+    job = job_queue_manager.get_job(current_job_id) if current_job_id else None
+    if job:
+        job.status = "running"
+        job.started_at = time.time()
+        job.mode = "quick"
+
     if not input_path or not os.path.exists(input_path):
+        if job:
+            job.status = "failed"
         await query.edit_message_text("⚠️ បាត់បង់ឯកសារវីដេអូបណ្ដោះអាសន្ន! សូមផ្ញើវីដេអូម្ដងទៀត។")
         return
 
@@ -895,9 +1036,15 @@ async def handle_render_action(update: Update, context: ContextTypes.DEFAULT_TYP
                 words=words,
                 hook_title=hook_title,
                 custom_font=custom_font,
-                cached_clean_video=cached_vid
+                cached_clean_video=cached_vid,
+                on_pid_assigned=job.register_pid if job else None,
+                cancel_event=job.cancel_event if job else None,
+                job_id=job.job_id if job else None
             )
         )
+        if job:
+            job.status = "completed"
+            job.finished_at = time.time()
         context.user_data["cached_clean_video"] = getattr(r_proc, "last_clean_video", None)
 
         caption_text = (
@@ -905,7 +1052,7 @@ async def handle_render_action(update: Update, context: ContextTypes.DEFAULT_TYP
             f"🎨 ម៉ូដ Font៖ {style_label}\n"
             f"🎵 ភ្លេងកំដរ៖ {bgm_label}\n\n"
             f"🚀 **បច្ចេកវិទ្យា Trending ជំនាន់ថ្មី៖**\n"
-            f"• ⚡ **100% Mouth-Synced Subtitles:** អក្សរលោតត្រូវតាមមាត់និយាយ\n"
+            f"• ⚡ **AI-Generated Subtitles (Review Before Render):** អក្សរលោតត្រូវតាមមាត់និយាយ\n"
             f"• 🎵 **Smart Audio Ducking:** ភ្លេងបន្ថយ auto ពេលមនុស្សនិយាយ (11% -> 22%)\n"
             f"• 📊 **Retention Progress Bar:** របារពេលវេលាខាងក្រោមទប់ Watch Time\n"
             f"• ✂️ **Smart Silence Cut:** កាត់ចន្លោះស្ងាត់ (> 0.40s) ដោយមិនដាច់ដង្ហើម\n"
@@ -990,9 +1137,25 @@ async def handle_render_action(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def handle_render_story(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ដំណើរការ Render វីដេអូបែប Mode 2: AI Visual Storyteller (RTX 3080 B-Roll & Transitions)"""
+    """ដំណើរការ Render វីដេអូបែប Mode 2: AI Visual Storyteller (B-Roll & Transitions)"""
     query = update.callback_query
     await query.answer()
+
+    user_id = update.effective_user.id if update.effective_user else query.message.chat_id
+    current_job_id = context.user_data.get("current_job_id")
+    if not job_queue_manager.validate_callback(user_id, current_job_id):
+        await query.message.reply_text(
+            "⚠️ **ប៊ូតុងនេះផុតសុពលភាពហើយ!**\n"
+            "សកម្មភាពនេះជាកម្មសិទ្ធិរបស់ Job ចាស់។ សូមប្រើប្រាស់សារចុងក្រោយបង្អស់។",
+            parse_mode="Markdown"
+        )
+        return
+
+    job = job_queue_manager.get_job(current_job_id) if current_job_id else None
+    if job:
+        job.status = "running"
+        job.started_at = time.time()
+        job.mode = "story"
 
     input_path = context.user_data.get("input_path")
     output_path = context.user_data.get("output_path")
@@ -1007,15 +1170,17 @@ async def handle_render_story(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = context.user_data.get("pending_chat_id", query.message.chat_id)
 
     if not input_path or not os.path.exists(input_path):
+        if job:
+            job.status = "failed"
         await query.edit_message_text("⚠️ បាត់បង់ឯកសារវីដេអូបណ្ដោះអាសន្ន! សូមផ្ញើវីដេអូម្ដងទៀត។")
         return
 
     try:
         await query.edit_message_text(
-            f"📊 **ដំណើរការ Mode 2៖ Motion Explainer & Raw B-Roll**\n"
+            f"📊 **[Job {getattr(job, 'job_id', 'sys')}] ដំណើរការ Mode 2៖ Motion Explainer & Raw B-Roll**\n"
             f"*{style_label} | {bgm_label}*\n\n"
             "🎙️ **ជំហានទី ១:** កាត់ Noise និងជម្រុញសំឡេងឱ្យច្បាស់បែប Studio...\n"
-            "🧠 **ជំហានទី ២:** Gemini AI កំពុងវិភាគសាច់រឿង រកប្លង់ Motion Explainer...\n"
+            "🧠 **ជំហានទី ២:** AI កំពុងវិភាគសាច់រឿង រកប្លង់ Motion Explainer...\n"
             "⏳ *សូមរង់ចាំបន្តិច...*",
             parse_mode="Markdown"
         )
@@ -1067,9 +1232,15 @@ async def handle_render_story(update: Update, context: ContextTypes.DEFAULT_TYPE
                 hook_title=hook_title,
                 custom_font=custom_font,
                 visual_overlays=overlays,
-                cached_clean_video=cached_vid
+                cached_clean_video=cached_vid,
+                on_pid_assigned=job.register_pid if job else None,
+                cancel_event=job.cancel_event if job else None,
+                job_id=job.job_id if job else None
             )
         )
+        if job:
+            job.status = "completed"
+            job.finished_at = time.time()
         context.user_data["cached_clean_video"] = getattr(r_proc, "last_clean_video", None)
 
         # Pyrogram Realtime Upload Progress Bar
@@ -1097,7 +1268,7 @@ async def handle_render_story(update: Update, context: ContextTypes.DEFAULT_TYPE
         caption_text = (
             f"🎬 **វីដេអូ AI Visual Storyteller រួចរាល់ហើយ!** 🎨✨\n\n"
             f"• ប្រភេទ៖ **របៀបទី ២ (Motion Explainer & Raw B-Roll)**\n"
-            f"• រូបភាព B-Roll៖ **{len(overlays)} ប្លង់ (NVIDIA RTX 3080)**\n"
+            f"• រូបភាព B-Roll៖ **{len(overlays)} ប្លង់ (Hardware Acceleration)**\n"
             f"• ទម្រង់ Font៖ {style_label}\n"
             f"• ភ្លេង BGM៖ {bgm_label}\n"
             f"• ភាសា៖ {lang_label}\n\n"
@@ -1458,7 +1629,7 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def handle_story_rerender_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Re-render វីដេអូឡើងវិញយ៉ាងលឿនជាមួយរូបភាពថ្មី (~15-25 វិនាទី)"""
+    """Re-render វីដេអូឡើងវិញយ៉ាងលឿនជាមួយរូបភាពថ្មី (តាមប្រវែងវីដេអូជាក់ស្តែង)"""
     query = update.callback_query
     await query.answer()
 
@@ -1484,7 +1655,7 @@ async def handle_story_rerender_now(update: Update, context: ContextTypes.DEFAUL
 
     msg_status = await query.message.reply_text(
         f"⚡ **កំពុង Re-render វីដេអូជាមួយរូបភាពថ្មី...** (ប៉ាន់ស្មាន ~{est_sec} វិនាទី)\n"
-        "🚀 *ដំណើរការលឿនដោយ GPU RTX 3080 & កាត់ចន្លោះស្ងាត់ Smart Cut...*",
+        "🚀 *ដំណើរការលឿនដោយ GPU Acceleration & កាត់ចន្លោះស្ងាត់ Smart Cut...*",
         parse_mode="Markdown"
     )
 
@@ -1506,9 +1677,15 @@ async def handle_story_rerender_now(update: Update, context: ContextTypes.DEFAUL
                 hook_title=hook_title,
                 custom_font=custom_font,
                 visual_overlays=overlays,
-                cached_clean_video=cached_vid
+                cached_clean_video=cached_vid,
+                on_pid_assigned=job.register_pid if job else None,
+                cancel_event=job.cancel_event if job else None,
+                job_id=job.job_id if job else None
             )
         )
+        if job:
+            job.status = "completed"
+            job.finished_at = time.time()
         context.user_data["cached_clean_video"] = getattr(r_proc, "last_clean_video", None)
 
         caption_text = (
@@ -1617,7 +1794,7 @@ async def handle_download_srt(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def handle_rerender_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Re-render វីដេអូឡើងវិញជាមួយអត្ថបទ Subtitle ដែលបានកែប្រែថ្មី (~15-20s)"""
+    """Re-render វីដេអូឡើងវិញជាមួយអត្ថបទ Subtitle ដែលបានកែប្រែថ្មី (តាមប្រវែងវីដេអូ)"""
     query = update.callback_query
     await query.answer()
 
@@ -1644,7 +1821,7 @@ async def handle_rerender_now(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     msg_status = await query.message.reply_text(
         f"⚡ **កំពុង Re-render វីដេអូជាមួយអត្ថបទថ្មី...** (ប៉ាន់ស្មាន ~{est_sec} វិនាទី)\n"
-        "🚀 *ដំណើរការលឿនដោយ GPU RTX 3080 & កាត់ចន្លោះស្ងាត់ Smart Cut...*",
+        "🚀 *ដំណើរការលឿនដោយ GPU Acceleration & កាត់ចន្លោះស្ងាត់ Smart Cut...*",
         parse_mode="Markdown"
     )
 
@@ -1666,9 +1843,15 @@ async def handle_rerender_now(update: Update, context: ContextTypes.DEFAULT_TYPE
                 hook_title=hook_title,
                 custom_font=custom_font,
                 visual_overlays=overlays,
-                cached_clean_video=cached_vid
+                cached_clean_video=cached_vid,
+                on_pid_assigned=job.register_pid if job else None,
+                cancel_event=job.cancel_event if job else None,
+                job_id=job.job_id if job else None
             )
         )
+        if job:
+            job.status = "completed"
+            job.finished_at = time.time()
         context.user_data["cached_clean_video"] = getattr(r_proc, "last_clean_video", None)
 
         mode_name = "AI Visual Story" if last_mode == "story" else "Quick Viral Pop"
@@ -1677,7 +1860,7 @@ async def handle_rerender_now(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"• ប្រភេទ៖ **{mode_name}**\n"
             f"• ទម្រង់ Font៖ {style_label}\n"
             f"• ភ្លេង BGM៖ {bgm_label}\n\n"
-            f"⚡ *កែអត្ថបទត្រូវមាត់ ១០០%*"
+            f"⚡ *កែអត្ថបទពិនិត្យផ្ទៀងផ្ទាត់មុនពេល Render*"
         )
 
         buttons = [
@@ -1729,9 +1912,24 @@ def main():
         write_timeout=300.0
     )
 
+    async def periodic_cleanup_task():
+        while True:
+            try:
+                await asyncio.sleep(1800)  # Sweep every 30 minutes
+                active_ids = job_queue_manager.get_active_job_ids()
+                stats = cleanup_manager.cleanup_expired_jobs(active_ids)
+                if stats["deleted_jobs"] > 0 or stats["deleted_files"] > 0:
+                    logger.info(f"Periodic cleanup finished: {stats}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"Error in periodic cleanup task: {e}")
+
     async def post_init(application):
         if TELEGRAM_API_ID and TELEGRAM_API_HASH:
             await get_pyro_client()
+        # Launch non-blocking background cleanup task
+        asyncio.create_task(periodic_cleanup_task())
 
     async def post_shutdown(application):
         global pyro_client
@@ -1750,6 +1948,9 @@ def main():
     # ចុះឈ្មោះ Handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("cancel", cancel_command))
+    app.add_handler(CommandHandler("new", new_command))
     app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
     app.add_handler(CallbackQueryHandler(handle_render_action, pattern="^action_render_quick$"))
     app.add_handler(CallbackQueryHandler(handle_render_story, pattern="^action_render_story$"))

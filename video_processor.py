@@ -1,70 +1,107 @@
+"""
+Video processing pipeline with robust subprocess timeouts, process tree termination,
+error classification, and result reporting.
+Never returns input path as output; raises explicit errors or returns result.
+"""
+
 import os
-import subprocess
 import logging
-from typing import Optional
+import threading
+from typing import Optional, Callable, Dict, Any, List
+from pathlib import Path
+
 from utils import get_ffmpeg_path
 from transcriber import AudioTranscriber
 from subtitle_generator import generate_animated_ass
+from process_runner import ProcessRunner, DEFAULT_FFMPEG_TIMEOUT
+from errors import (
+    CorruptMediaError,
+    NoAudioStreamError,
+    NoSpeechDetectedError,
+    ProcessTimeoutError,
+    JobCancelledError,
+    ProcessingResult
+)
+from media_validator import validate_video_with_audio
 
 logger = logging.getLogger(__name__)
+
 
 class VideoProcessor:
     def __init__(self, whisper_model: str = "small"):
         self.ffmpeg_path = get_ffmpeg_path()
         self.transcriber = AudioTranscriber(model_size=whisper_model)
-        
-        # ពិនិត្យមើល Gemini API Key
+
+        # Check Gemini API Key
         self.gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
         self.gemini_transcriber = None
         if self.gemini_key:
             try:
                 from gemini_transcriber import GeminiTranscriber
                 self.gemini_transcriber = GeminiTranscriber(api_key=self.gemini_key)
-                logger.info("Google Gemini Transcriber បានភ្ជាប់រួចរាល់ សម្រាប់ភាសាខ្មែរ!")
+                logger.info("Google Gemini Transcriber connected for Khmer speech-to-text.")
             except Exception as e:
-                logger.warning(f"មិនអាចបង្កើត GeminiTranscriber: {e}")
+                logger.warning(f"Could not initialize GeminiTranscriber: {e}")
 
     def process_video(
         self,
         input_video_path: str,
         output_video_path: str,
         language: Optional[str] = None,
-        font_key: Optional[str] = None
+        font_key: Optional[str] = None,
+        timeout: Optional[float] = None,
+        on_pid_assigned: Optional[Callable[[int], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+        job_id: Optional[str] = None
     ) -> str:
         """
-        ដំណើរការវីដេអូពេញលេញ៖
-        1. ស្ដាប់សំឡេងទាញយក Timestamp (AI Speech-to-Text) ប្រើ Gemini (សម្រាប់ខ្មែរ) ឬ Whisper
-        2. បង្កើត Subtitle លោតតាមពាក្យ (Animated ASS Captions)
-        3. Burn Subtitle ចូលក្នុងវីដេអូដោយប្រើ FFmpeg
+        Processes video:
+        1. Validates media and audio stream presence.
+        2. Transcribes speech to text with timestamps.
+        3. Creates animated subtitles.
+        4. Burns subtitles using FFmpeg with real timeouts and cancellation support.
+
+        Never returns input_video_path on failure or missing speech.
+        Raises specific BotProcessingError subclasses.
         """
+        # Validate media and check for corrupt media or missing audio
+        media_info = validate_video_with_audio(input_video_path)
+
         base_dir = os.path.dirname(input_video_path)
         base_name = os.path.splitext(os.path.basename(input_video_path))[0]
         ass_path = os.path.join(base_dir, f"{base_name}_captions.ass")
 
-        # ជំហានទី ១: AI Transcribe
+        # Step 1: AI Transcribe
         words = []
         if language == "km" and self.gemini_transcriber:
-            logger.info("ជំហានទី ១: កំពុងប្រើ Google Gemini Flash សម្រាប់ភាសាខ្មែរ...")
+            logger.info(f"[Job {job_id or 'sys'}] Using Gemini Flash for Khmer transcription...")
             try:
-                words = self.gemini_transcriber.transcribe(input_video_path, language="km")
+                words = self.gemini_transcriber.transcribe(
+                    input_video_path,
+                    language="km",
+                    cancel_event=cancel_event,
+                    job_id=job_id
+                )
             except Exception as e:
-                logger.error(f"Gemini error: {e}។ កំពុងប្ដូរទៅ Whisper...")
+                logger.error(f"[Job {job_id or 'sys'}] Gemini error: {e}. Switching to Whisper...")
 
         if not words:
-            logger.info("ជំហានទី ១: AI Whisper កំពុងវិភាគពាក្យ និងសំឡេង...")
+            logger.info(f"[Job {job_id or 'sys'}] Transcribing with Whisper...")
             words = self.transcriber.transcribe(input_video_path, language=language)
 
         if not words:
-            logger.warning("មិនរកឃើញសម្ដីនិយាយក្នុងវីដេអូទេ!")
-            return input_video_path
+            logger.warning(f"[Job {job_id or 'sys'}] No spoken words detected in video.")
+            raise NoSpeechDetectedError(
+                "No spoken words detected in video.",
+                job_id=job_id
+            )
 
-        # ជំហានទី ២: បង្កើត Animated Subtitle (.ass)
-        logger.info(f"ជំហានទី ២: កំពុងរៀបចំ Animated Subtitles (Font: {font_key or 'default'})...")
+        # Step 2: Generate Animated Subtitle (.ass)
+        logger.info(f"[Job {job_id or 'sys'}] Generating Animated Subtitles (Font: {font_key or 'default'})...")
         generate_animated_ass(words, ass_path, language=language, font_key=font_key)
 
-        # ជំហានទី ៣: Burn Subtitles ចូលវីដេអូដោយ FFmpeg
-        logger.info("ជំហានទី ៣: FFmpeg កំពុង Render វីដេអូ...")
-        
+        # Step 3: Burn Subtitles with FFmpeg
+        logger.info(f"[Job {job_id or 'sys'}] FFmpeg rendering subtitles...")
         escaped_ass_path = ass_path.replace("\\", "/").replace(":", r"\:")
         vf_filter = f"ass='{escaped_ass_path}'"
 
@@ -81,19 +118,28 @@ class VideoProcessor:
             output_video_path
         ]
 
-        logger.info(f"Running FFmpeg: {' '.join(cmd)}")
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        ffmpeg_timeout = timeout or DEFAULT_FFMPEG_TIMEOUT
+        proc_out = ProcessRunner.run(
+            cmd,
+            timeout=ffmpeg_timeout,
+            on_pid_assigned=on_pid_assigned,
+            cancel_event=cancel_event,
+            job_id=job_id
+        )
 
-        if result.returncode != 0:
-            logger.error(f"FFmpeg error: {result.stderr}")
-            raise RuntimeError(f"FFmpeg ជួបបញ្ហាពេល Render: {result.stderr[-400:]}")
+        if proc_out.returncode != 0:
+            logger.error(f"[Job {job_id or 'sys'}] FFmpeg render failed: {proc_out.stderr[-400:]}")
+            raise RuntimeError(f"FFmpeg render failed with exit code {proc_out.returncode}")
 
-        # សម្អាត file .ass បណ្ដោះអាសន្ន
+        # Clean temporary .ass file
         if os.path.exists(ass_path):
             try:
                 os.remove(ass_path)
             except Exception:
                 pass
 
-        logger.info(f"Render វីដេអូបានជោគជ័យ: {output_video_path}")
+        if not os.path.exists(output_video_path) or os.path.getsize(output_video_path) == 0:
+            raise RuntimeError(f"Output video was not created: {output_video_path}")
+
+        logger.info(f"[Job {job_id or 'sys'}] Render completed successfully: {output_video_path}")
         return output_video_path

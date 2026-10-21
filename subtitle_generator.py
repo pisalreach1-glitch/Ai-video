@@ -77,17 +77,11 @@ AVAILABLE_FONTS = {
     }
 }
 
+from timecode_utils import format_ass_timestamp
+
 def format_ass_time(seconds: float) -> str:
     """បំប្លែងវិនាទី (float) ទៅជាទម្រង់ម៉ោង ASS: H:MM:SS.cc"""
-    if seconds < 0:
-        seconds = 0.0
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    cs = int(round((seconds - int(seconds)) * 100))
-    if cs >= 100:
-        cs = 99
-    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+    return format_ass_timestamp(seconds)
 
 def generate_animated_ass(
     words: List[Dict],

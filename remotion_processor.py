@@ -1,61 +1,71 @@
+"""
+Remotion video rendering pipeline with:
+- Configurable real subprocess timeouts (independent of Remotion's internal CLI --timeout).
+- Process tree termination on cancellation.
+- Degradation to local Whisper when GEMINI_API_KEY is absent.
+- Accurate timeline and overlay mapping across silence removal.
+- Explicit error handling (never returns input path on error).
+"""
+
 import os
+import re
 import json
-import logging
-import subprocess
-import time
 import shutil
-from typing import Optional, List, Dict
-from gemini_transcriber import GeminiTranscriber
+import logging
+import threading
+from typing import List, Dict, Optional, Tuple, Callable
+from pathlib import Path
+
 import utils
+from transcriber import AudioTranscriber
+from process_runner import ProcessRunner, DEFAULT_FFMPEG_TIMEOUT, DEFAULT_REMOTION_TIMEOUT
+from timecode_utils import map_overlay_to_timeline, calculate_timeline_frames
+from errors import (
+    CorruptMediaError,
+    NoSpeechDetectedError,
+    ProcessTimeoutError,
+    JobCancelledError
+)
 
 logger = logging.getLogger(__name__)
 
+
 def get_context_emoji(text: str) -> str:
-    """ចាប់យក Emoji តាមអត្ថន័យពាក្យជាក់ស្ដែង (មិនដាក់បង្ខំគ្រប់ឃ្លាឡើយ)"""
-    if any(k in text for k in ["លុយ", "ដុល្លារ", "លក់", "ចំណេញ", "ថ្លៃ", "ទិញ", "ចំណូល", "ទ្រព្យ"]):
+    """Helper emoji for contextual pop."""
+    t = text.lower()
+    if any(k in t for k in ["លុយ", "ដុល្លារ", "លក់", "ចំណេញ", "ថ្លៃ", "money", "cash", "dollar"]):
         return "💰"
-    if any(k in text for k in ["ក្ដៅ", "ខ្លាំង", "ល្បី", "អស្ចារ្យ", "ពេញនិយម"]):
-        return "🔥"
-    if any(k in text for k in ["គន្លឹះ", "វិធី", "គំនិត", "សម្ងាត់", "ចំណេះ", "មេរៀន"]):
+    if any(k in t for k in ["គន្លឹះ", "វិធី", "គំនិត", "មេរៀន", "tip", "idea"]):
         return "💡"
-    if any(k in text for k in ["កុំ", "ខុស", "បញ្ហា", "ប្រយ័ត្ន", "ខាត", "គ្រោះថ្នាក់", "ចាញ់"]):
-        return "⚠️"
-    if any(k in text for k in ["ជោគជ័យ", "កំពូល", "ស្តេច", "មេ", "លេខ១", "ឈ្នះ"]):
-        return "👑"
-    if any(k in text for k in ["លឿន", "រហ័ស", "ទាន់ចិត្ត", "ភ្លាម"]):
-        return "⚡"
-    if any(k in text for k in ["ទូរស័ព្ទ", "អនឡាញ", "បច្ចេកវិទ្យា", "AI"]):
-        return "📱"
-    if any(k in text for k in ["ស្រឡាញ់", "ពេញចិត្ត", "ល្អ", "បេះដូង"]):
+    if any(k in t for k in ["ស្រឡាញ់", "ចិត្ត", "ល្អ", "love", "heart"]):
         return "❤️"
     return ""
 
+
 def build_smart_cuts(
     words: List[Dict],
-    pad_before: float = 0.08,        # Cushion មុនពេលនិយាយ 80ms (មិនដាច់ព្យាង្គមុខ 100%)
-    pad_after: float = 0.10,         # Cushion ក្រោយពេលនិយាយ 100ms (សំឡេងរលូន មិនកំបុត)
-    silence_threshold: float = 0.28, # កាត់ Dead Air / Silence Gap >= 0.28s (280ms)
-    max_shot_duration: float = 3.6   # Punch-in Zoom (1.0x <-> 1.15x) រៀងរាល់ ~3.6s តាមចង្វាក់ធម្មជាតិ
+    pad_before: float = 0.08,        # Cushion before speech (80ms)
+    pad_after: float = 0.10,         # Cushion after speech (100ms)
+    silence_threshold: float = 0.28, # Cut silence >= 0.28s
+    max_shot_duration: float = 3.6   # Punch-in Zoom alternation interval
 ) -> List[Dict]:
     """
-    ក្បួន Smart Cut & Dynamic Viral Video Pacing កម្រិត Professional (MrBeast / Hormozi Style):
-    1. កាត់ចន្លោះស្ងាត់ (Dead Space / Silence >= 0.28s) ដោយស្វ័យប្រវត្តិ ធានាថាមិនស្ងាត់ចោល
-    2. Cushion មុខ 80ms និងក្រោយ 100ms ការពារមិនឱ្យដាច់ពាក្យ ឬកាត់សំឡេងកំបុត ១០០%
-    3. Dynamic Punch-In Jump Cut: ប្តូរមុំកាមេរ៉ាហ្ស៊ូម (1.0x <-> 1.15x) រៀងរាល់ពេលកាត់ចន្លោះស្ងាត់ ឬរៀងរាល់ ~3-4 វិនាទី
-       ដែលធ្វើឱ្យវីដេអូរស់រវើក ទាក់ទាញភ្នែក និងមិនមានភាពធុញទ្រាន់!
+    Builds smart cuts and dynamic viral camera pacing:
+    1. Cuts silence gaps >= 0.28s smoothly.
+    2. Keeps 80ms before and 100ms after to prevent clipping words.
+    3. Dynamic punch-in zoom (1.0x <-> 1.15x) on natural speech breaks.
     """
     if not words:
         return []
 
-    sorted_words = sorted(words, key=lambda x: float(x["start"]))
-
+    sorted_words = sorted(words, key=lambda x: float(x.get("start", 0.0)))
     cuts = []
     current_cut = None
     zoom_alt = 0
 
     for w in sorted_words:
-        ws = float(w["start"])
-        we = float(w["end"])
+        ws = float(w.get("start", 0.0))
+        we = float(w.get("end", ws + 0.1))
         w_text = str(w.get("word", "")).strip()
 
         if we <= ws or not w_text:
@@ -87,12 +97,9 @@ def build_smart_cuts(
             is_shot_expired = shot_dur >= max_shot_duration
 
             if is_silence_gap:
-                # 1. កាត់ Dead Air / Silence Gap ចោល៖
-                # Shot ចាស់បញ្ចប់ត្រឹម prev_end + pad_after
                 current_cut["end"] = min(current_cut["end"], prev_end + pad_after)
                 cuts.append(current_cut)
                 zoom_alt += 1
-                # Shot ថ្មីចាប់ផ្តើមពី ws - pad_before
                 current_cut = {
                     "start": max(0.0, ws - pad_before),
                     "end": we + pad_after,
@@ -100,8 +107,6 @@ def build_smart_cuts(
                     "subtitles": [item_dict]
                 }
             elif is_shot_expired:
-                # 2. Jump Cut / Punch-In Zoom តាមចង្វាក់ធម្មជាតិ (គ្មាន Silence Gap)៖
-                # កាត់ត្រង់ចន្លោះឃ្លា (ws) យ៉ាងសុក្រឹត ដោយគ្មាន Overlap និងគ្មានបាត់សំឡេង
                 cut_point = ws
                 current_cut["end"] = cut_point
                 cuts.append(current_cut)
@@ -113,14 +118,12 @@ def build_smart_cuts(
                     "subtitles": [item_dict]
                 }
             else:
-                # 3. និយាយបន្តក្នុង Shot តែមួយដោយរលូន
                 current_cut["end"] = max(current_cut["end"], we + pad_after)
                 current_cut["subtitles"].append(item_dict)
 
     if current_cut:
         cuts.append(current_cut)
 
-    logger.info(f"✨ Smart Cuts: បានបង្កើត {len(cuts)} Shots រលូន (Silence Threshold: {silence_threshold}s, Pad: {pad_before}s/{pad_after}s)")
     return cuts
 
 
@@ -131,24 +134,43 @@ class RemotionProcessor:
             self.remotion_dir = os.path.join(base_project_dir, "remotion")
         else:
             self.remotion_dir = os.path.abspath(remotion_dir)
+
         self.public_dir = os.path.join(self.remotion_dir, "public")
         os.makedirs(self.public_dir, exist_ok=True)
-
         self.ffmpeg_path = utils.get_ffmpeg_path()
-        self.gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
-        if not self.gemini_key:
-            raise ValueError("ត្រូវការ GEMINI_API_KEY នៅក្នុង .env ដើម្បីដំណើរការ Auto-Cut!")
-        
-        self.transcriber = GeminiTranscriber(api_key=self.gemini_key)
-        logger.info("RemotionProcessor ត្រូវបានបង្កើតឡើងដោយជោគជ័យ!")
 
-    def enhance_audio(self, input_video: str, output_video: str) -> str:
+        # Graceful setup: Gemini key is optional!
+        self.gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+        self.gemini_transcriber = None
+        if self.gemini_key:
+            try:
+                from gemini_transcriber import GeminiTranscriber
+                self.gemini_transcriber = GeminiTranscriber(api_key=self.gemini_key)
+                logger.info("Google Gemini Transcriber loaded.")
+            except Exception as e:
+                logger.warning(f"Could not initialize GeminiTranscriber: {e}")
+
+        # Local Whisper Transcriber for offline/fallback mode
+        self.local_transcriber = AudioTranscriber(
+            model_size=os.getenv("WHISPER_MODEL", "small"),
+            device="cpu",
+            compute_type="int8"
+        )
+        self.last_clean_video: Optional[str] = None
+        logger.info("RemotionProcessor ready.")
+
+    def enhance_audio(
+        self,
+        input_video: str,
+        output_video: str,
+        cancel_event: Optional[threading.Event] = None,
+        job_id: Optional[str] = None
+    ) -> str:
         """
-        1. កម្ចាត់សំឡេង Noise (កង្ហារ ម៉ាស៊ីនត្រជាក់ Hiss) និងជម្រុញសំឡេងនិយាយឱ្យច្បាស់ណែន (Podcast Studio Clarity)
-        2. Normalize វីដេអូទៅជា Fast-Seek H.264 (CFR 30fps + Keyframe GOP 30) ដោយ NVIDIA RTX NVENC (ឬ CPU libx264)
-           ដើម្បីធានាថា Remotion អាច Seek គ្រប់ Frame បានរលូន ១០០% និងមិនមាន Error 'No frame found at position'
+        Filters noise, boosts dialogue clarity, and normalizes video to fast-seek H.264 30fps.
+        Never returns input_video on failure; raises error.
         """
-        # A. សាកល្បងប្រើ Hardware Acceleration (NVIDIA NVENC) ជាចម្បង (~8 វិនាទី)
+        # Hardware acceleration check (NVENC)
         cmd_nvenc = [
             self.ffmpeg_path,
             "-y",
@@ -166,17 +188,16 @@ class RemotionProcessor:
             output_video
         ]
         try:
-            logger.info("🎙️ កំពុងកាត់សំឡេង Noise និង Normalize វីដេអូទៅ Fast-Seek H.264 30fps (RTX NVENC)...")
-            res = subprocess.run(cmd_nvenc, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            logger.info(f"[Job {job_id or 'sys'}] Enhancing audio and normalizing video (NVENC)...")
+            res = ProcessRunner.run(cmd_nvenc, timeout=DEFAULT_FFMPEG_TIMEOUT, cancel_event=cancel_event, job_id=job_id)
             if res.returncode == 0 and os.path.exists(output_video) and os.path.getsize(output_video) > 1000:
-                logger.info("✨ វីដេអូ និងសំឡេងត្រូវបាន Enhance & Fast-Keyframe H.264 ដោយ NVIDIA NVENC ជោគជ័យ!")
                 return output_video
-            else:
-                logger.warning("NVENC render failed, falling back to CPU libx264...")
+        except (JobCancelledError, ProcessTimeoutError):
+            raise
         except Exception as e:
-            logger.warning(f"NVENC exception ({e}), falling back to CPU libx264...")
+            logger.info(f"NVENC not available ({e}), falling back to CPU libx264...")
 
-        # B. CPU Fallback (libx264)
+        # CPU fallback (libx264)
         cmd_cpu = [
             self.ffmpeg_path,
             "-y",
@@ -192,90 +213,125 @@ class RemotionProcessor:
             "-b:a", "192k",
             output_video
         ]
-        try:
-            logger.info("🎙️ កំពុងកាត់សំឡេង Noise និង Normalize វីដេអូដោយ CPU libx264...")
-            res = subprocess.run(cmd_cpu, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if res.returncode == 0 and os.path.exists(output_video) and os.path.getsize(output_video) > 1000:
-                logger.info("✨ វីដេអូ និងសំឡេងត្រូវបាន Enhance & Fast-Keyframe H.264 ដោយ CPU libx264 ជោគជ័យ!")
-                return output_video
-        except Exception as e:
-            logger.warning(f"CPU libx264 exception: {e}")
+        res_cpu = ProcessRunner.run(cmd_cpu, timeout=DEFAULT_FFMPEG_TIMEOUT, cancel_event=cancel_event, job_id=job_id)
+        if res_cpu.returncode == 0 and os.path.exists(output_video) and os.path.getsize(output_video) > 1000:
+            return output_video
 
-        return input_video
+        raise RuntimeError(f"Failed to enhance audio and normalize video: {res_cpu.stderr[-300:]}")
 
-    def transcribe_video(self, input_video_path: str, language: str = None):
+    def transcribe_video(
+        self,
+        input_video_path: str,
+        language: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
+        job_id: Optional[str] = None
+    ) -> Tuple[List[Dict], str]:
         """
-        ទាញយក Timestamps, ពាក្យសម្ដី និង Viral Hook Title ពី Gemini AI សម្រាប់ពិនិត្យ និងកែសម្រួល
+        Transcribes video speech:
+        Uses Gemini if configured, otherwise falls back to local Whisper.
         """
         abs_input = os.path.abspath(input_video_path)
-        logger.info("Gemini កំពុងវិភាគសម្ដីនិយាយ រក Viral Hook Title & Context SFX...")
-        words = self.transcriber.transcribe(abs_input, language=language)
-        hook_title = getattr(self.transcriber, "hook_title", "")
+        words: List[Dict] = []
+        hook_title = ""
+
+        if self.gemini_transcriber:
+            try:
+                words = self.gemini_transcriber.transcribe(
+                    abs_input,
+                    language=language,
+                    cancel_event=cancel_event,
+                    job_id=job_id
+                )
+                hook_title = getattr(self.gemini_transcriber, "hook_title", "")
+            except Exception as e:
+                logger.warning(f"Gemini transcription failed ({e}). Falling back to local Whisper...")
+
+        if not words:
+            logger.info(f"[Job {job_id or 'sys'}] Running local Whisper transcription...")
+            words = self.local_transcriber.transcribe(abs_input, language=language)
+            hook_title = "Trending Highlight"
+
         return words or [], hook_title
 
     def process_video(
         self,
         input_video_path: str,
         output_video_path: str,
-        language: str = None,
+        language: Optional[str] = None,
         theme: str = "tiktok_viral",
         bgm: str = "lofi",
         show_progress_bar: bool = True,
-        words: list = None,
-        hook_title: str = None,
-        custom_font: str = None,
-        visual_overlays: list = None,
-        cached_clean_video: str = None
+        words: Optional[List[Dict]] = None,
+        hook_title: Optional[str] = None,
+        custom_font: Optional[str] = None,
+        visual_overlays: Optional[List[Dict]] = None,
+        cached_clean_video: Optional[str] = None,
+        timeout: Optional[float] = None,
+        on_pid_assigned: Optional[Callable[[int], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+        job_id: Optional[str] = None
     ) -> str:
         """
-        ដំណើរការកាត់តវីដេអូបែបធម្មជាតិ (Natural Smart Cut) និងដាក់អក្សរ Spring Pop:
-        1. Gemini ស្ដាប់សំឡេងទាញយក Timestamps, Hook Title & SFX cues (ប្រសិនបើមិនទាន់បាន transcribe)
-        2. កាត់សំឡេង Noise ឱ្យច្បាស់បែប Studio ដោយ FFmpeg
-        3. បង្កើត Smart Cuts & Dynamic Punch-In Camera Cuts
-        4. រៀបចំ SFX Events (Whoosh, Cash, Ding, Thud, Pop)
-        5. បញ្ជូនទៅ Remotion (React) ដើម្បី Render Word-by-Word Kinetic Highlighting & Hook Banner
+        Full Remotion render pipeline:
+        1. Speech transcription (if words not already provided).
+        2. Audio enhancement and CFR 30fps video normalization.
+        3. Smart Cuts generation.
+        4. Context SFX events.
+        5. Visual overlay mapping across silence cuts.
+        6. Remotion CLI rendering with real timeout and process tree termination.
+        Never returns input path; returns output_video_path or raises exception.
         """
         abs_input = os.path.abspath(input_video_path)
         abs_output = os.path.abspath(output_video_path)
 
-        # ជំហានទី ១: យក Speech Analysis & Viral Hook Extraction
+        # Step 1: Transcribe if not provided
         if words is None:
-            logger.info("ជំហានទី ១: Gemini កំពុងវិភាគសម្ដីនិយាយ រក Viral Hook Title & Context SFX...")
-            words = self.transcriber.transcribe(abs_input, language=language)
-            hook_title = getattr(self.transcriber, "hook_title", "")
+            words, extracted_hook = self.transcribe_video(
+                abs_input,
+                language=language,
+                cancel_event=cancel_event,
+                job_id=job_id
+            )
+            if hook_title is None:
+                hook_title = extracted_hook
         else:
             if hook_title is None:
-                hook_title = getattr(self.transcriber, "hook_title", "")
+                hook_title = "Trending Highlight"
 
         if not words:
-            logger.warning("មិនមានសម្ដីនិយាយក្នុងវីដេអូទេ!")
-            return input_video_path
+            raise NoSpeechDetectedError("No spoken words detected in video.", job_id=job_id)
 
-        # ជំហានទី ២: កាត់សំឡេង Noise និងបង្កើនភាពច្បាស់ (Audio Denoising & Studio Boost)
-        unique_id = int(time.time() * 1000)
-        enhanced_input_path = None
+        # Step 2: Audio Enhancement & CFR 30fps Normalization
+        unique_id = job_id or f"{int(os.path.getmtime(abs_input))}_{abs(hash(abs_input)) % 10000}"
+        clean_video_path = cached_clean_video
 
-        if cached_clean_video and os.path.exists(cached_clean_video):
-            clean_video_path = cached_clean_video
-            logger.info(f"⚡ ប្រើប្រាស់ Cached Clean Video ឡើងវិញ (រំលង FFmpeg Enhance): {clean_video_path}")
-        else:
-            enhanced_input_path = os.path.join(self.public_dir, f"enhanced_{unique_id}.mp4")
-            clean_video_path = self.enhance_audio(abs_input, enhanced_input_path)
-            self.last_clean_video = clean_video_path
+        if not clean_video_path or not os.path.exists(clean_video_path):
+            clean_video_path = os.path.join(self.public_dir, f"clean_{unique_id}.mp4")
+            self.enhance_audio(
+                abs_input,
+                clean_video_path,
+                cancel_event=cancel_event,
+                job_id=job_id
+            )
 
-        # ជំហានទី ៣: បង្កើត Smart Cuts បែបធម្មជាតិ (Silence > 0.65s, Buffer 180ms/250ms)
+        self.last_clean_video = clean_video_path
+
+        # Step 3: Smart Cuts
         cuts = build_smart_cuts(words)
+        if not cuts:
+            # Fallback to single uncut segment
+            cuts = [{
+                "start": 0.0,
+                "end": max([w.get("end", 1.0) for w in words]),
+                "zoom": 1.0,
+                "subtitles": words
+            }]
 
-        logger.info(f"ជំហានទី ៣: បានរៀបចំ {len(cuts)} Shots ធម្មជាតិ (ពី {len(words)} ឃ្លា)")
-
-        # ជំហានទី ៤: រៀបចំ Context Sound Effects (Whoosh, Ding, Cash, Thud, Pop)
+        # Step 4: SFX Events
         sfx_events = []
         timeline_cursor = 0.0
-
         for idx, cut in enumerate(cuts):
             cut_duration = max(0.2, cut["end"] - cut["start"])
-
-            # Camera Transition Whoosh (ពេលកាមេរ៉ា Punch-In Zoom)
             if idx > 0 and cut.get("zoom", 1.0) > 1.05:
                 sfx_events.append({
                     "start": max(0.0, timeline_cursor - 0.05),
@@ -283,20 +339,10 @@ class RemotionProcessor:
                     "volume": 0.40
                 })
 
-            # Semantic SFX តាមអត្ថន័យពាក្យ (Cash, Ding, Thud, Pop, Buzzer, Tada, Click, Camera, Sparkle, Riser, Heartbeat)
             valid_sfx = {
-                "whoosh": 0.40,
-                "pop": 0.45,
-                "cash": 0.50,
-                "ding": 0.48,
-                "thud": 0.55,
-                "click": 0.42,
-                "camera": 0.45,
-                "buzzer": 0.45,
-                "tada": 0.50,
-                "sparkle": 0.45,
-                "riser": 0.42,
-                "heartbeat": 0.50,
+                "whoosh": 0.40, "pop": 0.45, "cash": 0.50, "ding": 0.48,
+                "thud": 0.55, "click": 0.42, "camera": 0.45, "buzzer": 0.45,
+                "tada": 0.50, "sparkle": 0.45, "riser": 0.42, "heartbeat": 0.50
             }
             for sub in cut.get("subtitles", []):
                 sfx_tag = sub.get("sfx")
@@ -307,12 +353,9 @@ class RemotionProcessor:
                         "sound": sfx_tag,
                         "volume": valid_sfx[sfx_tag]
                     })
-
             timeline_cursor += cut_duration
 
-        logger.info(f"ជំហានទី ៤: បានរៀបចំ {len(sfx_events)} Sound Effects (Transitions & Semantic SFX)!")
-
-        # ជំហានទី ៥: ចម្លងវីដេអូទៅ public/ សម្រាប់ Remotion staticFile()
+        # Step 5: Copy video to public/ for Remotion staticFile()
         public_filename = f"clip_{unique_id}.mp4"
         public_path = os.path.join(self.public_dir, public_filename)
         shutil.copy2(clean_video_path, public_path)
@@ -320,30 +363,16 @@ class RemotionProcessor:
         props_filename = f"props_{unique_id}.json"
         props_path = os.path.join(self.remotion_dir, props_filename)
 
-        # Map Visual Overlays ទៅកាន់ Assembled Timeline យ៉ាងសុក្រឹត ១០០%
+        # Map Visual Overlays across silence removal cuts
         mapped_overlays = []
         if visual_overlays:
-            def _to_timeline(orig_t: float) -> float:
-                accum = 0.0
-                for c in cuts:
-                    c_dur = max(0.2, c["end"] - c["start"])
-                    if orig_t < c["start"]:
-                        return accum
-                    if c["start"] <= orig_t <= c["end"]:
-                        return accum + (orig_t - c["start"])
-                    accum += c_dur
-                return accum
-
             for vo in visual_overlays:
                 vo_copy = dict(vo)
                 orig_s = float(vo.get("start", 0))
-                orig_e = float(vo.get("end", orig_s + 3.8))
-                tl_s = _to_timeline(orig_s)
-                tl_e = _to_timeline(orig_e)
-                if tl_e <= tl_s:
-                    tl_e = tl_s + 3.5
-                vo_copy["start"] = round(tl_s, 2)
-                vo_copy["end"] = round(tl_e, 2)
+                orig_e = float(vo.get("end", orig_s + 3.5))
+                tl_s, tl_e = map_overlay_to_timeline(orig_s, orig_e, cuts)
+                vo_copy["start"] = tl_s
+                vo_copy["end"] = tl_e
                 mapped_overlays.append(vo_copy)
 
         props_data = {
@@ -362,11 +391,8 @@ class RemotionProcessor:
         with open(props_path, "w", encoding="utf-8") as f:
             json.dump(props_data, f, ensure_ascii=False, indent=2)
 
-        # ជំហានទី ៦: Render វីដេអូជាមួយ Remotion CLI
-        logger.info("ជំហានទី ៦: Remotion កំពុង Render វីដេអូជាមួយ Word-by-Word Highlighting, Hook Banner & SFX...")
-        
+        # Step 6: Render video with Remotion CLI
         npx_cmd = "npx.cmd" if os.name == "nt" else "npx"
-
         cmd = [
             npx_cmd,
             "remotion",
@@ -386,21 +412,27 @@ class RemotionProcessor:
             "--pixel-format=yuv420p"
         ]
 
-        logger.info(f"Executing: {' '.join(cmd)}")
+        logger.info(f"[Job {job_id or 'sys'}] Executing Remotion render command...")
+        render_timeout = timeout or DEFAULT_REMOTION_TIMEOUT
+
         try:
-            result = subprocess.run(
+            proc_out = ProcessRunner.run(
                 cmd,
                 cwd=self.remotion_dir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
+                timeout=render_timeout,
+                on_pid_assigned=on_pid_assigned,
+                cancel_event=cancel_event,
+                job_id=job_id
             )
 
-            if result.returncode != 0:
-                logger.error(f"Remotion Render Error: {result.stderr}")
-                raise RuntimeError(f"Remotion Error: {result.stderr[-500:]}")
+            if proc_out.returncode != 0:
+                logger.error(f"[Job {job_id or 'sys'}] Remotion Render Error: {proc_out.stderr[-500:]}")
+                raise RuntimeError(f"Remotion Error: {proc_out.stderr[-500:]}")
 
-            logger.info(f"Remotion Render ជោគជ័យ ១០០%: {abs_output}")
+            if not os.path.exists(abs_output) or os.path.getsize(abs_output) == 0:
+                raise RuntimeError(f"Rendered video file was not created: {abs_output}")
+
+            logger.info(f"[Job {job_id or 'sys'}] Remotion Render succeeded: {abs_output}")
             return abs_output
 
         finally:
