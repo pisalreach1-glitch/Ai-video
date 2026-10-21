@@ -87,7 +87,7 @@ def dubbing_review_keyboard(
         InlineKeyboardButton(text="📊 មើលការតម្រឹម", callback_data=f"d_rep:{job_id}:{revision_id}"),
     ])
     rows.append([
-        InlineKeyboardButton(text="🔄 បកប្រែឡើងវិញ", callback_data=f"mode_dub:{job_id}"),
+        InlineKeyboardButton(text="🤖 បកប្រែដោយ AI ឡើងវិញ", callback_data=f"d_ai:{job_id}:{revision_id}"),
         InlineKeyboardButton(text="❌ បោះបង់", callback_data=f"job_cancel:{job_id}"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)

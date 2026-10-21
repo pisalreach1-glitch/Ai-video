@@ -76,3 +76,32 @@ async def test_no_key_provider_never_produces_false_khmer_success():
     # Does not copy English text as Khmer
     assert translated[0].translated_text != "Pour in the water."
     assert translated[0].status == "needs_review"
+
+@pytest.mark.asyncio
+async def test_gemini_translation_chunks_large_segment_counts(monkeypatch):
+    """Ensure translate_segments_gemini breaks lists >35 into batches and aggregates them."""
+    from app.services.segment_translation import translate_segments_gemini
+    from app.domain.dubbing import TranslatedSegment
+
+    # 80 segments
+    sources = [
+        SourceSegment(segment_id=f"s{i:03d}", start_ms=i * 1000, end_ms=(i + 1) * 1000, source_text=f"Text {i}")
+        for i in range(1, 81)
+    ]
+
+    call_batch_sizes = []
+
+    async def mock_batch(batch, api_key, cancel_check=None):
+        call_batch_sizes.append(len(batch))
+        return [
+            TranslatedSegment(segment_id=s.segment_id, translated_text=f"Khmer {s.segment_id}", status="ready")
+            for s in batch
+        ]
+
+    monkeypatch.setattr("app.services.segment_translation._translate_single_batch_gemini", mock_batch)
+
+    results = await translate_segments_gemini(sources, api_key="dummy_key")
+    assert len(results) == 80
+    assert call_batch_sizes == [35, 35, 10]
+    assert results[0].translated_text == "Khmer s001"
+    assert results[-1].translated_text == "Khmer s080"

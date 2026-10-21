@@ -77,12 +77,12 @@ def validate_translation_response(
 
     return results
 
-async def translate_segments_gemini(
+async def _translate_single_batch_gemini(
     segments: list[SourceSegment],
     api_key: str,
     cancel_check: Callable[[], bool] | None = None,
 ) -> list[TranslatedSegment]:
-    """Translate segments in batch using Gemini 2.5 Flash with structured JSON output."""
+    """Translate a single chunk of segments using Gemini."""
     if not segments:
         return []
 
@@ -147,6 +147,27 @@ async def translate_segments_gemini(
 
     return validate_translation_response(segments, data, provider_name="gemini")
 
+async def translate_segments_gemini(
+    segments: list[SourceSegment],
+    api_key: str,
+    cancel_check: Callable[[], bool] | None = None,
+) -> list[TranslatedSegment]:
+    """Translate segments in chunks using Gemini 2.5 Flash to guarantee stability with 100+ segments."""
+    if not segments:
+        return []
+
+    BATCH_SIZE = 35
+    if len(segments) <= BATCH_SIZE:
+        return await _translate_single_batch_gemini(segments, api_key, cancel_check=cancel_check)
+
+    results: list[TranslatedSegment] = []
+    for i in range(0, len(segments), BATCH_SIZE):
+        batch = segments[i:i + BATCH_SIZE]
+        batch_res = await _translate_single_batch_gemini(batch, api_key, cancel_check=cancel_check)
+        results.extend(batch_res)
+
+    return results
+
 async def translate_segments(
     segments: list[SourceSegment],
     provider: str | None = None,
@@ -162,7 +183,7 @@ async def translate_segments(
         return []
 
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    selected_provider = provider or config.translation_provider or "gemini"
+    selected_provider = provider if provider is not None else config.translation_provider
 
     if selected_provider == "gemini" and api_key:
         try:

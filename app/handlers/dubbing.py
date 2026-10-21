@@ -104,6 +104,48 @@ async def cb_dubbing_page(call: CallbackQuery, state: FSMContext) -> None:
     await render_segment_review_page(call, job_id, revision_id, page=page)
     await call.answer()
 
+@router.callback_query(F.data.startswith("d_ai:"))
+async def cb_dubbing_auto_translate(call: CallbackQuery, state: FSMContext) -> None:
+    _, job_id, rev_str = call.data.split(":")
+    revision_id = int(rev_str)
+
+    if not await verify_callback_job(call, job_id, expected_rev=revision_id, allowed_states=(JobState.AWAITING_SEGMENT_REVIEW, JobState.AWAITING_TEXT)):
+        return
+
+    from app.storage.dubbing import load_source_segments, load_dubbing_plan, save_dubbing_plan
+    from app.services.segment_translation import translate_segments
+    import shutil
+
+    source_segments = load_source_segments(job_id)
+    if not source_segments:
+        await call.answer("មិនមានទិន្នន័យឃ្លាដើមទេ។ សូមជ្រើសរើសរបៀបបកប្រែឡើងវិញ។", show_alert=True)
+        return
+
+    await call.answer("⏳ កំពុងបកប្រែដោយ AI...")
+    await safe_edit_message(call, "⏳ កំពុងបកប្រែឃ្លាទាំងអស់ជាភាសាខ្មែរតាម AI (Gemini)... សូមរង់ចាំបន្តិច។")
+
+    try:
+        translated_segments = await translate_segments(source_segments, provider="gemini")
+        plan = load_dubbing_plan(job_id, revision_id)
+        if plan:
+            plan.translations = translated_segments
+            save_dubbing_plan(job_id, revision_id, plan)
+
+        # Invalidate any cached segment audio so new translations will generate fresh speech
+        rev_dir = workspace.get_revision_dir(job_id, revision_id)
+        seg_base = rev_dir / "segments"
+        if seg_base.exists():
+            shutil.rmtree(seg_base, ignore_errors=True)
+
+        await render_segment_review_page(call, job_id, revision_id, page=1, plan=plan)
+    except Exception as e:
+        logger.exception(f"Failed to auto-translate segments for job {job_id}: {e}")
+        await safe_edit_message(
+            call,
+            f"❌ បរាជ័យក្នុងការបកប្រែដោយ AI៖ {e}",
+            reply_markup=dubbing_review_keyboard(job_id, revision_id, page=1, total_pages=1, segments_on_page=[]),
+        )
+
 @router.callback_query(F.data.startswith("d_ed:"))
 async def cb_dubbing_edit_segment(call: CallbackQuery, state: FSMContext) -> None:
     _, job_id, rev_str, segment_id = call.data.split(":")

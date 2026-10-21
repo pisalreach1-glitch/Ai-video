@@ -30,7 +30,7 @@ class Settings:
     dub_sample_rate: int = 48000
     dub_max_tempo: float = 1.15
     dub_max_segments: int = 120
-    translation_provider: str = "manual"
+    translation_provider: str = "gemini"
     telegram_api_id: int | None = None
     telegram_api_hash: str | None = None
 
@@ -106,7 +106,7 @@ def load_settings() -> Settings:
         dub_sample_rate=int(os.getenv("DUB_SAMPLE_RATE", "48000")),
         dub_max_tempo=float(os.getenv("DUB_MAX_TEMPO", "1.15")),
         dub_max_segments=int(os.getenv("DUB_MAX_SEGMENTS", "120")),
-        translation_provider=os.getenv("TRANSLATION_PROVIDER", "manual"),
+        translation_provider=os.getenv("TRANSLATION_PROVIDER", "gemini" if os.getenv("GEMINI_API_KEY") else "manual"),
         telegram_api_id=int(os.getenv("TELEGRAM_API_ID").strip()) if os.getenv("TELEGRAM_API_ID") and os.getenv("TELEGRAM_API_ID").strip().isdigit() else None,
         telegram_api_hash=os.getenv("TELEGRAM_API_HASH", "").strip() or None,
     )

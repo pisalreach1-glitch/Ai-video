@@ -39,7 +39,7 @@ async def cb_choose_free_narration(call: CallbackQuery, state: FSMContext) -> No
 @router.callback_query(F.data.startswith("mode_dub:"))
 async def cb_choose_source_timed_dubbing(call: CallbackQuery, state: FSMContext) -> None:
     _, job_id = call.data.split(":")
-    if not await verify_callback_job(call, job_id, allowed_states=(JobState.AWAITING_TEXT, JobState.AWAITING_SETTINGS, JobState.ANALYZING_SOURCE)):
+    if not await verify_callback_job(call, job_id, allowed_states=(JobState.AWAITING_TEXT, JobState.AWAITING_SETTINGS, JobState.ANALYZING_SOURCE, JobState.AWAITING_SEGMENT_REVIEW)):
         return
 
     job = job_storage.get_job(job_id)
@@ -58,26 +58,18 @@ async def cb_choose_source_timed_dubbing(call: CallbackQuery, state: FSMContext)
 
     from app.services.source_asr import transcribe_source
     from app.services.segment_translation import translate_segments
+    from app.storage.dubbing import load_source_segments
 
     try:
-        source_segments = await transcribe_source(
-            video_path=Path(job.source_path),
-            video_duration=video_duration,
-            job_id=job_id,
-        )
-
+        source_segments = load_source_segments(job_id)
         if not source_segments:
-            # Silence or no speech detected -> offer Free Narration (Req 18)
-            job_storage.set_job_status(job_id, JobState.AWAITING_TEXT)
-            await safe_edit_message(
-                call,
-                texts.NO_SPEECH_FOUND,
-                reply_markup=mode_choice_keyboard(job_id, has_caption=False),
+            source_segments = await transcribe_source(
+                video_path=Path(job.source_path),
+                video_duration=video_duration,
+                job_id=job_id,
             )
-            return
-
-        # Save source segments
-        save_source_segments(job_id, source_segments)
+            if source_segments:
+                save_source_segments(job_id, source_segments)
 
         # Step 2: Translate segments
         job_storage.set_job_status(job_id, JobState.TRANSLATING_SEGMENTS, stage="translating_segments")

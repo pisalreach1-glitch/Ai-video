@@ -47,3 +47,60 @@ async def test_stale_dubbing_callback_rejection(temp_job_storage):
     # Callback referencing rev1 must be detected as outdated
     assert rev1.revision_id != latest_job.current_revision_id
     assert rev2.revision_id == latest_job.current_revision_id
+
+@pytest.mark.asyncio
+async def test_dubbing_auto_translate_callback(temp_job_storage, monkeypatch):
+    """Ensure d_ai callback triggers AI translation and updates DubbingPlan."""
+    from app.domain.states import JobState
+    from app.domain.dubbing import SourceSegment, TranslatedSegment, DubbingPlan
+    from app.storage.dubbing import save_source_segments, save_dubbing_plan, load_dubbing_plan
+    from app.handlers.dubbing import cb_dubbing_auto_translate
+
+    job = temp_job_storage.create_job(user_id=111, chat_id=222)
+    temp_job_storage.set_job_status(job.job_id, JobState.AWAITING_SEGMENT_REVIEW)
+
+    import app.handlers.dubbing
+    monkeypatch.setattr(app.handlers.dubbing, "job_storage", temp_job_storage)
+    monkeypatch.setattr("app.handlers.common.job_storage", temp_job_storage)
+
+    sources = [
+        SourceSegment(segment_id="s001", start_ms=0, end_ms=2000, source_text="Hello world"),
+    ]
+    save_source_segments(job.job_id, sources)
+
+    plan = DubbingPlan(
+        mode="source_timed",
+        source_duration_ms=2000,
+        sample_rate=48000,
+        segments=sources,
+        translations=[TranslatedSegment(segment_id="s001", translated_text="", translation_provider="manual", status="needs_review")],
+    )
+    save_dubbing_plan(job.job_id, 1, plan)
+
+    # Mock translate_segments to return Khmer text
+    async def mock_translate(segs, provider=None, cancel_check=None):
+        return [TranslatedSegment(segment_id="s001", translated_text="សួស្តីពិភពលោក", translation_provider="gemini", status="ready")]
+
+    monkeypatch.setattr("app.services.segment_translation.translate_segments", mock_translate)
+
+    class MockCall:
+        from_user = type("User", (), {"id": 111})()
+        message = type("Msg", (), {"chat": type("Chat", (), {"id": 222})(), "video": None, "document": None, "photo": None, "edit_text": _async_noop, "answer": _async_noop})()
+        data = f"d_ai:{job.job_id}:1"
+        async def answer(self, text="", show_alert=False):
+            pass
+
+    class MockState:
+        async def update_data(self, **kwargs):
+            pass
+
+    await cb_dubbing_auto_translate(MockCall(), MockState())
+
+    # Verify plan translations updated to Khmer
+    updated_plan = load_dubbing_plan(job.job_id, 1)
+    assert updated_plan is not None
+    assert updated_plan.translations[0].translated_text == "សួស្តីពិភពលោក"
+    assert updated_plan.translations[0].status == "ready"
+
+async def _async_noop(*args, **kwargs):
+    pass
