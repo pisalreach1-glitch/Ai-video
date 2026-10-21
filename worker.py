@@ -68,9 +68,9 @@ class JobNotificationService:
         except Exception as e:
             logger.warning(f"[Job {job.job_id[:8]}] Failed to send progress update: {e}")
 
-    async def send_video_result(self, job: DbJob, video_path: str, caption: str, reply_markup=None):
+    async def send_video_result(self, job: DbJob, video_path: str, caption: str, reply_markup=None) -> bool:
         if not self.bot_app:
-            return
+            return False
         try:
             pyro = None
             if self.get_pyro_func:
@@ -97,15 +97,17 @@ class JobNotificationService:
                         reply_markup=reply_markup,
                         supports_streaming=True
                     )
+            return True
         except Exception as e:
             logger.error(f"[Job {job.job_id[:8]}] Failed to send video: {e}", exc_info=True)
             try:
                 await self.bot_app.bot.send_message(
                     chat_id=job.chat_id,
-                    text=f"✅ វីដេអូបាន Render រួចរាល់នៅ៖ `{video_path}` ប៉ុន្តែមានបញ្ហាពេលផ្ញើ៖ {str(e)[:150]}"
+                    text=f"⚠️ វីដេអូបាន Render រួចរាល់នៅ៖ `{video_path}` ប៉ុន្តែមានបញ្ហាពេលផ្ញើ៖ {str(e)[:150]}"
                 )
             except Exception:
                 pass
+            return False
 
 
 class RenderWorkerPool:
@@ -175,7 +177,7 @@ class RenderWorkerPool:
         """Continuous worker picking up jobs from SQLite."""
         while self._running:
             try:
-                job = self.db.get_next_queued_job()
+                job = self.db.claim_next_job(claimed_by=f"worker_{os.getpid()}")
                 if not job:
                     self._new_job_event.clear()
                     try:
@@ -305,6 +307,19 @@ class RenderWorkerPool:
                     f"✂️ **[Job {short_id}] ជំហានទី ៣ (Generating)៖** កាត់ Dead Air & រៀបចំ Smart Cuts..."
                 )
 
+            # Duration slicing based on wizard target_length
+            target_length = params.get("target_length", "auto")
+            custom_prompt = params.get("custom_prompt")
+
+            if target_length == "short_30s" and words:
+                sliced = [w for w in words if float(w.get("end", 0.0)) <= 30.5]
+                if sliced:
+                    words = sliced
+            elif target_length == "medium_60s" and words:
+                sliced = [w for w in words if float(w.get("end", 0.0)) <= 60.5]
+                if sliced:
+                    words = sliced
+
             from remotion_processor import build_smart_cuts
             cuts = build_smart_cuts(words)
             params["cuts"] = cuts
@@ -315,7 +330,8 @@ class RenderWorkerPool:
                     scenes = await loop.run_in_executor(
                         None,
                         self.r_proc.gemini_transcriber.extract_visual_story_scenes,
-                        words
+                        words,
+                        custom_prompt
                     )
                     import image_story_generator
                     overlays = await loop.run_in_executor(
@@ -351,6 +367,35 @@ class RenderWorkerPool:
             # Stage 5 & 6: PREVIEW_RENDERING & AWAITING_APPROVAL
             # -------------------------------------------------------------
             _check_cancel()
+            self.db.update_job_status(job_id, "preview_rendering", step_progress=0.70, params=params, note="Generating preview")
+
+            preview_path = str(Path(job.job_dir) / f"preview_{short_id}.mp4")
+            try:
+                from utils import get_ffmpeg_path
+                from process_runner import ProcessRunner
+                ffmpeg_bin = get_ffmpeg_path()
+                start_sec = max(0.0, float(words[0].get("start", 0.0)) - 0.2) if words else 0.0
+                preview_words = [w for w in words if float(w.get("start", 0.0)) < start_sec + 6.0]
+                from subtitle_generator import generate_animated_ass
+                preview_ass = str(Path(job.job_dir) / f"preview_{short_id}.ass")
+                generate_animated_ass(preview_words, preview_ass, font_key=params.get("custom_font"))
+
+                ass_escaped = preview_ass.replace("\\", "/").replace(":", "\\:")
+                cmd_prev = [
+                    ffmpeg_bin, "-y",
+                    "-ss", str(start_sec),
+                    "-i", job.input_path,
+                    "-t", "5.0",
+                    "-vf", f"subtitles='{ass_escaped}'",
+                    "-c:v", "libx264", "-preset", "ultrafast",
+                    "-c:a", "aac", "-b:a", "128k",
+                    preview_path
+                ]
+                ProcessRunner.run(cmd_prev, timeout=25.0, cancel_event=cancel_event, job_id=job_id)
+            except Exception as prev_err:
+                logger.warning(f"[Job {short_id}] Preview generation skipped ({prev_err}), using card review.")
+                preview_path = None
+
             self.db.update_job_status(job_id, "awaiting_approval", step_progress=0.75, params=params, note="Awaiting user approval")
 
             if self.notifier:
@@ -366,16 +411,19 @@ class RenderWorkerPool:
                 ])
 
                 preview_summary = (
-                    f"📋 **[Job {short_id} - Rev {rev_id}] រៀបចំរួចរាល់សម្រាប់ពិនិត្យ (Review)៖**\n\n"
+                    f"📋 **[Job {short_id} - Rev {rev_id}] រៀបចំរួចរាល់សម្រាប់ពិនិត្យ (Review Preview)៖**\n\n"
                     f"• ប្រភេទ (Mode)៖ `{job.mode}`\n"
                     f"• រយៈពេលសរុប៖ `{params.get('duration', 0.0):.1f}s`\n"
                     f"• ចំនួនឃ្លា Subtitles៖ `{len(words)} ឃ្លា`\n"
                     f"• ចំណងជើង Viral Hook៖ «{params.get('hook_title', '')}»\n"
                     f"• Font ខ្មែរ៖ `{params.get('custom_font') or 'Default'}`\n"
                     f"• ភ្លេងកំដរ BGM៖ `{params.get('bgm', 'lofi')}`\n\n"
-                    "👉 សូមចុច **[ 🚀 យល់ព្រម Render វីដេអូពេញលេញ ]** ដើម្បី Render ឬចុចកែប្រែ Subtitle មុន Render!"
+                    "👉 ខាងលើជាវីដេអូ Preview សាកល្បង ៥ វិនាទី! សូមចុច **[ 🚀 យល់ព្រម Render វីដេអូពេញលេញ ]** ដើម្បីបន្ត!"
                 )
-                await self.notifier.notify_progress(job, preview_summary, reply_markup=kb)
+                if preview_path and os.path.exists(preview_path) and os.path.getsize(preview_path) > 1000:
+                    await self.notifier.send_video_result(job, preview_path, caption=preview_summary, reply_markup=kb)
+                else:
+                    await self.notifier.notify_progress(job, preview_summary, reply_markup=kb)
 
         except JobCancelledError:
             logger.info(f"[Job {short_id}] Job was cancelled by user.")
@@ -480,6 +528,7 @@ class RenderWorkerPool:
 
             # Stage: UPLOADING
             self.db.update_job_status(job_id, "uploading", step_progress=0.95, output_path=output_path)
+            delivered = False
             if self.notifier:
                 await self.notifier.notify_progress(
                     job,
@@ -499,11 +548,38 @@ class RenderWorkerPool:
                     f"• **BGM:** `{params.get('bgm', 'lofi')}`\n\n"
                     f"⚡ *ដំណើរការលឿនដោយ Local GPU/CPU & Remotion Engine*"
                 )
-                await self.notifier.send_video_result(job, output_path, caption=caption, reply_markup=kb)
+                delivered = await self.notifier.send_video_result(job, output_path, caption=caption, reply_markup=kb)
+            else:
+                delivered = True  # Headless/CLI mode without notification service
 
-            # Stage: COMPLETED
-            self.db.update_job_status(job_id, "completed", step_progress=1.0, output_path=output_path)
-            logger.info(f"[Job {short_id}] Processing pipeline fully COMPLETED!")
+            if delivered:
+                # Stage: COMPLETED (ONLY when delivered!)
+                self.db.update_job_status(job_id, "completed", step_progress=1.0, output_path=output_path)
+                logger.info(f"[Job {short_id}] Processing pipeline fully COMPLETED and DELIVERED!")
+            else:
+                # Stage: DELIVERY_FAILED (NEVER mark completed if delivery failed!)
+                self.db.update_job_status(
+                    job_id,
+                    "delivery_failed",
+                    step_progress=0.95,
+                    output_path=output_path,
+                    error_reason="DELIVERY_FAILED",
+                    note="Render succeeded but video delivery to chat failed."
+                )
+                logger.warning(f"[Job {short_id}] Render completed but delivery failed; status set to delivery_failed.")
+                if self.notifier:
+                    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                    retry_kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 ព្យាយាមផ្ញើវីដេអូម្តងទៀត (Retry Delivery)", callback_data=f"retry_deliv:{job_id}:{job.revision_id}")],
+                        [InlineKeyboardButton("🧙‍♂️ បង្កើតវីដេអូថ្មី (New)", callback_data="wiz_start")]
+                    ])
+                    await self.notifier.notify_progress(
+                        job,
+                        f"⚠️ **[Job {short_id}] វីដេអូ Render បានជោគជ័យ ប៉ុន្តែមិនទាន់អាចផ្ញើចូល Chat បានទេ។**\n\n"
+                        f"• ទីតាំង File លើម៉ាស៊ីន៖ `{output_path}`\n\n"
+                        f"👉 សូមចុចប៊ូតុងខាងក្រោមដើម្បីព្យាយាមផ្ញើឡើងវិញ៖",
+                        reply_markup=retry_kb
+                    )
 
         except JobCancelledError:
             self.db.update_job_status(job_id, "cancelled", note="User cancelled render")

@@ -121,16 +121,20 @@ def parse_srt_or_arrow_transcript(raw_text: str, max_dur: float = 3600.0) -> Tup
 
 
 class GeminiTranscriber:
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        # Configure client with HTTP options if supported
-        try:
-            self.client = genai.Client(
-                api_key=api_key,
-                http_options=types.HttpOptions(timeout=GEMINI_REQUEST_TIMEOUT)
-            )
-        except Exception:
-            self.client = genai.Client(api_key=api_key)
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or ""
+        self.client = None
+        if self.api_key:
+            try:
+                self.client = genai.Client(
+                    api_key=self.api_key,
+                    http_options=types.HttpOptions(timeout=GEMINI_REQUEST_TIMEOUT)
+                )
+            except Exception:
+                try:
+                    self.client = genai.Client(api_key=self.api_key)
+                except Exception as e:
+                    logger.warning(f"Could not initialize genai.Client: {e}")
 
         self.ffmpeg_path = utils.get_ffmpeg_path()
         self.hook_title = ""
@@ -365,8 +369,8 @@ class GeminiTranscriber:
         self.detected_language = language or "km"
         return words
 
-    def extract_visual_story_scenes(self, words: List[Dict]) -> List[Dict]:
-        """Extracts visual story scenes for Mode 2."""
+    def extract_visual_story_scenes(self, words: List[Dict], user_prompt: Optional[str] = None) -> List[Dict]:
+        """Extracts visual story scenes for Mode 2 with optional user direction."""
         if not words:
             return []
 
@@ -385,7 +389,7 @@ class GeminiTranscriber:
                 "end": round(total_duration * 0.40, 2),
                 "topic": "ចំណុចសំខាន់ (Key Point)",
                 "highlightWord": words[0]["word"] if words else "Highlight",
-                "imagePrompt": "minimalist aesthetic vertical cinematic photography",
+                "imagePrompt": f"minimalist aesthetic vertical cinematic photography {user_prompt or ''}".strip(),
                 "sound": "whoosh"
             }
         ]

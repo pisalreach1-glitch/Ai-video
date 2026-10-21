@@ -207,3 +207,22 @@ The bot separates interactive wizard state from background rendering job state:
    Rendering time depends on hardware capability (CPU cores, GPU NVENC support) and input video duration/resolution. Typical renders take from under a minute up to several minutes for longer 4K videos.
 3. **Queue Limits & Concurrency:**
    To preserve local PC stability, default configuration enforces `MAX_RENDER_CONCURRENCY=1`, `1` active job per user, and a bounded queue size of `20` jobs in SQLite.
+
+---
+
+## 📦 Delivery Resilience & Audit Verification (42 Tests)
+
+1. **Delivery Failure Guarantee:**
+   - If Telegram `send_video` fails (e.g. timeout, 50MB Bot API limit, connection reset), the job status is set to `delivery_failed` and is **never** falsely marked `completed`.
+   - The rendered MP4 output path is safely preserved on the local filesystem.
+   - An interactive `[ 🔄 ព្យាយាមផ្ញើវីដេអូម្តងទៀត (Retry Delivery) ]` button allows resending without rerendering.
+2. **Real Preview Snippet (`Upload → Preview → Approve → MP4`):**
+   - Before full render, a 5-second burned subtitle preview video clip is generated and delivered to the user.
+   - The user reviews the actual video and font style before clicking `[ 🚀 យល់ព្រម Render វីដេអូពេញលេញ (Approve) ]`.
+3. **Atomic Job Claiming:**
+   - Jobs are claimed from SQLite using atomic transactions with revision guards, preventing race conditions under concurrency.
+4. **Duration & Custom Prompt Slicing:**
+   - Target pacing (`short_30s`, `medium_60s`, `full`) slices speech transcript accurately.
+   - Custom prompts guide visual story scene extraction.
+5. **Automated Verification:**
+   - 42 comprehensive unit, integration, and smoke tests pass cleanly with mocked external APIs.

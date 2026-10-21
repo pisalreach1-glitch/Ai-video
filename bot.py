@@ -292,6 +292,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "final_rendering": "⚡ កំពុង Render Remotion ពេញលេញ",
         "uploading": "📤 កំពុងផ្ញើត្រឡប់ទៅវិញ (Uploading)",
         "completed": "✅ រួចរាល់ពេញលេញ (Completed)",
+        "delivery_failed": "⚠️ Render រួចរាល់តែមិនអាចផ្ញើចូល Chat បាន (Delivery Failed)",
         "awaiting_manual_agent": "🤖 រង់ចាំជំនួយការ AI ឯកទេស (Awaiting Manual Agent)",
         "failed": "❌ ជួបបញ្ហា (Failed)",
         "cancelled": "🛑 ត្រូវបានបោះបង់ (Cancelled)",
@@ -318,6 +319,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons = []
     if latest_job.status in ("awaiting_approval", "awaiting_manual_agent"):
         buttons.append([InlineKeyboardButton("🚀 យល់ព្រម Render ឥឡូវនេះ", callback_data=f"appr:{latest_job.job_id}:{latest_job.revision_id}")])
+    elif latest_job.status == "delivery_failed":
+        buttons.append([InlineKeyboardButton("🔄 ព្យាយាមផ្ញើវីដេអូម្តងទៀត (Retry Delivery)", callback_data=f"retry_deliv:{latest_job.job_id}:{latest_job.revision_id}")])
     if latest_job.is_active():
         buttons.append([InlineKeyboardButton("🛑 បោះបង់ការងារ (Cancel Job)", callback_data=f"act_cancel:{latest_job.job_id}")])
     buttons.append([InlineKeyboardButton("🧙‍♂️ បង្កើតវីដេអូថ្មី (New Wizard)", callback_data="wiz_start")])
@@ -477,6 +480,50 @@ async def handle_wizard_callbacks(update: Update, context: ContextTypes.DEFAULT_
         ])
         await query.edit_message_text(confirm_msg, reply_markup=kb, parse_mode="Markdown")
         return
+
+async def handle_retry_delivery_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ព្យាយាមផ្ញើវីដេអូ Render រួចរាល់ម្តងទៀតប្រសិនបើជួបបញ្ហាបណ្តាញ"""
+    query = update.callback_query
+    data = query.data  # retry_deliv:{job_id}:{revision_id}
+    parts = data.split(":")
+    if len(parts) < 2:
+        await query.answer("⚠️ ទម្រង់មិនត្រឹមត្រូវ!")
+        return
+
+    job_id = parts[1]
+    job = db.get_job(job_id)
+    if not job or job.user_id != query.from_user.id:
+        await query.answer("⚠️ មិនមានសិទ្ធិឡើយ!", show_alert=True)
+        return
+
+    if not job.output_path or not os.path.exists(job.output_path):
+        await query.answer("⚠️ មិនឃើញឯកសារវីដេអូលើម៉ាស៊ីនទេ!", show_alert=True)
+        return
+
+    await query.answer("🔄 កំពុងព្យាយាមផ្ញើវីដេអូម្តងទៀត...")
+    if worker_pool and worker_pool.notifier:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✏️ កែប្រែអត្ថបទ Subtitle ឡើងវិញ", callback_data=f"rev_edit:{job_id}:{job.revision_id}")],
+            [InlineKeyboardButton("🧙‍♂️ បង្កើតវីដេអូថ្មី (New Wizard)", callback_data="wiz_start")]
+        ])
+        caption = (
+            f"🎬 **វីដេអូ Render រួចរាល់ហើយ!** ✨\n\n"
+            f"• **Job ID:** `{job_id[:8]}` (Rev {job.revision_id})\n"
+            f"• **Mode:** `{job.mode}`\n\n"
+            f"⚡ *ផ្ញើឡើងវិញដោយជោគជ័យ*"
+        )
+        delivered = await worker_pool.notifier.send_video_result(job, job.output_path, caption=caption, reply_markup=kb)
+        if delivered:
+            db.update_job_status(job_id, "completed", step_progress=1.0, note="Delivered on retry")
+            await query.edit_message_text(f"✅ **[Job {job_id[:8]}] បានផ្ញើវីដេអូចូល Chat ដោយជោគជ័យ!**", parse_mode="Markdown")
+        else:
+            await query.edit_message_text(
+                f"❌ **[Job {job_id[:8]}] នៅតែមិនទាន់អាចផ្ញើបានទេ។ ឯកសារស្ថិតនៅម៉ាស៊ីន៖** `{job.output_path}`",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 ព្យាយាមម្តងទៀត", callback_data=f"retry_deliv:{job_id}:{job.revision_id}")]]),
+                parse_mode="Markdown"
+            )
+
 
 async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """គ្រប់គ្រងការយល់ព្រម Render (Approve Callback) ជាមួយ revision check និង duplicate click prevention"""
@@ -2336,6 +2383,7 @@ def main():
     app.add_handler(CommandHandler("cancel", cancel_command))
     app.add_handler(CommandHandler("new", new_command))
     app.add_handler(CallbackQueryHandler(handle_wizard_callbacks, pattern="^wiz_"))
+    app.add_handler(CallbackQueryHandler(handle_retry_delivery_callback, pattern="^retry_deliv:"))
     app.add_handler(CallbackQueryHandler(handle_approval_callback, pattern="^appr:"))
     app.add_handler(CallbackQueryHandler(handle_revision_callbacks, pattern="^rev_"))
     app.add_handler(CallbackQueryHandler(handle_action_callbacks, pattern="^act_"))

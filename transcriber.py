@@ -116,7 +116,7 @@ class AudioTranscriber:
         self.detected_language = getattr(info, "language", "km") or "km"
         return all_words
 
-    def extract_visual_story_scenes(self, words: List[Dict]) -> List[Dict]:
+    def extract_visual_story_scenes(self, words: List[Dict], user_prompt: Optional[str] = None) -> List[Dict]:
         """Fallback visual story scenes when Gemini is offline or unavailable."""
         try:
             from gemini_transcriber import GeminiTranscriber

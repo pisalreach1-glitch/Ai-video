@@ -32,6 +32,7 @@ PROCESSING_STATES = [
     "final_rendering",
     "uploading",
     "completed",
+    "delivery_failed",
     "awaiting_manual_agent",
     "failed",
     "cancelled",
@@ -473,6 +474,45 @@ class DatabaseManager:
 
         return self.get_job(job_id)
 
+    def claim_next_job(self, claimed_by: str = "worker") -> Optional[DbJob]:
+        """
+        Atomically claims the next queued job (FIFO) by transitioning it to 'analyzing'
+        in an isolated SQLite transaction.
+        Returns the claimed DbJob or None if queue is empty or claimed concurrently.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT job_id, revision_id FROM jobs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1"
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            job_id = row["job_id"]
+            rev_id = row["revision_id"]
+
+            now = time.time()
+            update_cur = cursor.execute(
+                """
+                UPDATE jobs
+                SET status = 'analyzing', step_progress = 0.1, updated_at = ?
+                WHERE job_id = ? AND status = 'queued' AND revision_id = ?
+                """,
+                (now, job_id, rev_id)
+            )
+            if update_cur.rowcount == 0:
+                return None  # Claimed concurrently by another process
+
+            cursor.execute(
+                """
+                INSERT INTO job_history (job_id, revision_id, from_status, to_status, timestamp, note)
+                VALUES (?, ?, 'queued', 'analyzing', ?, ?)
+                """,
+                (job_id, rev_id, now, f"Atomically claimed by {claimed_by}")
+            )
+            conn.commit()
+            return self.get_job(job_id)
+
     def get_next_queued_job(self) -> Optional[DbJob]:
         """Fetches the oldest queued job (FIFO)."""
         with self._get_connection() as conn:
@@ -503,3 +543,5 @@ class DatabaseManager:
                 "awaiting_approval": awaiting_appr,
                 "total": total
             }
+
+DatabaseManager.create_job = DatabaseManager.insert_job
