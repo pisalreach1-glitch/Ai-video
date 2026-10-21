@@ -44,6 +44,9 @@ class TestFreshSetup:
             r_proc = RemotionProcessor()
             assert r_proc.gemini_transcriber is None
             assert r_proc.local_transcriber is not None
+            assert r_proc.transcriber is not None
+            assert hasattr(r_proc.transcriber, "detected_language")
+            assert hasattr(r_proc.transcriber, "extract_visual_story_scenes")
 
             # VideoProcessor must initialize gracefully without error
             v_proc = VideoProcessor()

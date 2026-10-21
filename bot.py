@@ -807,7 +807,8 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text(f"❌ **[Job {getattr(job, 'job_id', 'sys')}] {p_err.user_friendly_message}**", parse_mode="Markdown")
             return
 
-        detected_lang = getattr(r_proc.transcriber, "detected_language", "km")
+        active_transcriber = getattr(r_proc, "transcriber", None) or getattr(r_proc, "local_transcriber", None)
+        detected_lang = getattr(active_transcriber, "detected_language", "km") if active_transcriber else "km"
         lang_flags = {
             "km": "🇰🇭 ភាសាខ្មែរ (Khmer)",
             "en": "🇬🇧 អង់គ្លេស (English)",
@@ -1557,7 +1558,11 @@ async def handle_render_story(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         # Step 2: Extract Visual Story Scenes with Gemini
         logger.info("🧠 Gemini កំពុងវិភាគសាច់រឿង រកប្លង់ Motion Explainer...")
-        scenes = await loop.run_in_executor(None, r_proc.transcriber.extract_visual_story_scenes, words)
+        active_transcriber = getattr(r_proc, "gemini_transcriber", None) or getattr(r_proc, "transcriber", None) or getattr(r_proc, "local_transcriber", None)
+        if active_transcriber and hasattr(active_transcriber, "extract_visual_story_scenes"):
+            scenes = await loop.run_in_executor(None, active_transcriber.extract_visual_story_scenes, words)
+        else:
+            scenes = []
 
         await query.edit_message_text(
             f"📊 **ដំណើរការ Mode 2៖ Motion Explainer & Raw B-Roll**\n\n"

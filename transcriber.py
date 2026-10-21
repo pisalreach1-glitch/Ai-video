@@ -29,6 +29,7 @@ class AudioTranscriber:
         self.model_size = model_size
         self.device = device
         self.compute_type = compute_type
+        self.detected_language = 'km'
         self.model = self._load_model(device, compute_type)
 
     def _load_model(self, device: str, compute_type: str):
@@ -112,4 +113,24 @@ class AudioTranscriber:
                         })
 
         logger.info(f"ដំណើរការចប់! រកឃើញ {len(all_words)} ពាក្យ។ ភាសាក្នុងវីដេអូ: {info.language}")
+        self.detected_language = getattr(info, "language", "km") or "km"
         return all_words
+
+    def extract_visual_story_scenes(self, words: List[Dict]) -> List[Dict]:
+        """Fallback visual story scenes when Gemini is offline or unavailable."""
+        try:
+            from gemini_transcriber import GeminiTranscriber
+            return GeminiTranscriber(api_key="").extract_visual_story_scenes(words)
+        except Exception:
+            total_duration = max([w.get("end", 0) for w in words]) if words else 30
+            return [
+                {
+                    "layout": "polaroid",
+                    "start": round(total_duration * 0.15, 2),
+                    "end": round(total_duration * 0.40, 2),
+                    "topic": "ចំណុចសំខាន់ (Key Point)",
+                    "highlightWord": words[0]["word"] if words else "Highlight",
+                    "imagePrompt": "minimalist aesthetic vertical cinematic photography",
+                    "sound": "whoosh"
+                }
+            ]

@@ -161,8 +161,13 @@ class RemotionProcessor:
             device="cpu",
             compute_type="int8"
         )
+        self.transcriber = self.gemini_transcriber or self.local_transcriber
         self.last_clean_video: Optional[str] = None
         logger.info("RemotionProcessor ready.")
+
+    def get_transcriber(self):
+        """Returns the primary transcriber (Gemini if configured, else Whisper)."""
+        return self.gemini_transcriber or self.local_transcriber
 
     def enhance_audio(
         self,
