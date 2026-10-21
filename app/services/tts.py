@@ -2,7 +2,7 @@
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 import edge_tts
 from app.config import config
 
@@ -17,6 +17,7 @@ async def generate_narration(
     voice: str = "km-KH-SreymomNeural",
     rate: str = "+0%",
     output_audio_path: Path | str = "voice.mp3",
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[Path, float, list[dict[str, Any]]]:
     """
     Generate narration MP3 and timing events in a single Edge-TTS pass.
@@ -31,6 +32,12 @@ async def generate_narration(
 
     with open(dest, "wb") as audio_file:
         async for chunk in comm.stream():
+            if cancel_check and cancel_check():
+                audio_file.close()
+                if dest.exists():
+                    dest.unlink(missing_ok=True)
+                raise RuntimeError("TTS generation was cancelled.")
+
             chunk_type = chunk.get("type")
             if chunk_type == "audio":
                 audio_file.write(chunk.get("data", b""))

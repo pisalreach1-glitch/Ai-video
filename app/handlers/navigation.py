@@ -14,6 +14,7 @@ from app.ui.keyboards import (
     job_in_progress_keyboard,
     duration_choice_keyboard,
     main_menu_keyboard,
+    interrupted_job_keyboard,
 )
 
 router = Router(name="navigation")
@@ -86,6 +87,13 @@ async def cb_resume_job(call: CallbackQuery, state: FSMContext) -> None:
         await call.message.edit_text(
             texts.JOB_RENDERING,
             reply_markup=job_in_progress_keyboard(job_id),
+        )
+
+    elif status == JobState.INTERRUPTED:
+        await call.message.edit_text(
+            "⚠️ ការងាររបស់អ្នកត្រូវបានផ្អាកដោយសារ bot បាន restart។\n"
+            "តើអ្នកចង់សាកល្បងដំណើរការឡើងវិញ ឬចាប់ផ្ដើមការងារថ្មី?",
+            reply_markup=interrupted_job_keyboard(job_id, rev_id),
         )
 
     else:

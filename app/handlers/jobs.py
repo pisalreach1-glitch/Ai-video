@@ -9,7 +9,8 @@ from app.storage.jobs import job_storage
 from app.jobs.worker import worker_pool
 from app.services.delivery import deliver_final_video, send_srt_file
 from app.ui import texts_km as texts
-from app.ui.keyboards import main_menu_keyboard, settings_menu_keyboard
+from app.ui.keyboards import main_menu_keyboard, settings_menu_keyboard, job_in_progress_keyboard
+from app.handlers.common import safe_edit_message
 
 logger = logging.getLogger(__name__)
 router = Router(name="jobs")
@@ -27,11 +28,47 @@ async def cb_cancel_job(call: CallbackQuery, state: FSMContext) -> None:
     worker_pool.cancel_job(job_id)
     await state.clear()
 
-    await call.message.edit_text(
+    await safe_edit_message(
+        call,
         texts.JOB_CANCELLED,
         reply_markup=main_menu_keyboard(has_active_job=False),
     )
     await call.answer()
+
+@router.callback_query(F.data.startswith("retry_job:"))
+async def cb_retry_interrupted_job(call: CallbackQuery, state: FSMContext) -> None:
+    _, job_id, rev_id_str = call.data.split(":")
+    rev_id = int(rev_id_str)
+    user_id = call.from_user.id
+    chat_id = call.message.chat.id
+
+    if not job_storage.verify_ownership(job_id, user_id, chat_id):
+        await call.answer("Unauthorized.", show_alert=True)
+        return
+
+    rev = job_storage.get_revision(job_id, rev_id)
+    if not rev:
+        await call.answer("Revision not found.", show_alert=True)
+        return
+
+    # Decide whether to retry final or preview
+    if rev.preview_path:
+        task_type = "final"
+        next_status = JobState.FINAL_QUEUED
+    else:
+        task_type = "preview"
+        next_status = JobState.PREVIEW_QUEUED
+
+    job_storage.enqueue_task(job_id, rev_id, user_id, task_type)
+    job_storage.set_job_status(job_id, next_status, stage=f"{task_type}_queue")
+    await state.set_state(WizardStep.rendering_in_progress)
+
+    await safe_edit_message(
+        call,
+        "⏳ ការងារត្រូវបានបញ្ចូលក្នុងជួរម្តងទៀត!\nសូមរង់ចាំបន្តិច...",
+        reply_markup=job_in_progress_keyboard(job_id),
+    )
+    await call.answer("✅ បានដាក់ក្នុងជួរឡើងវិញ!")
 
 @router.callback_query(F.data.startswith("retry_dlv:"))
 async def cb_retry_delivery(call: CallbackQuery, bot: Bot) -> None:

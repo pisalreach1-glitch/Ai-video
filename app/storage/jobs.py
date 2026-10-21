@@ -311,6 +311,66 @@ class JobStorage:
         ).fetchone()
         return row["cnt"] if row else 0
 
+    def recover_interrupted_jobs(self) -> int:
+        """
+        Recover tasks stuck in processing/queued states from an unexpected bot shutdown.
+        Transitions stuck render_queue tasks to 'interrupted' and corresponding jobs to INTERRUPTED.
+        Returns the number of jobs recovered.
+        """
+        conn = self.db.get_connection()
+        now = time.time()
+
+        # 1. Recover any tasks stuck in the render_queue
+        rows = conn.execute(
+            "SELECT job_id FROM render_queue WHERE status IN ('processing', 'queued')"
+        ).fetchall()
+
+        count = 0
+        for r in rows:
+            job_id = r["job_id"]
+            conn.execute(
+                "UPDATE render_queue SET status = 'interrupted', completed_at = ? WHERE job_id = ?",
+                (now, job_id)
+            )
+            conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, stage = 'interrupted', error_message = ?, updated_at = ?
+                WHERE job_id = ?
+                """,
+                (JobState.INTERRUPTED.value, "Server restarted while task was processing.", now, job_id)
+            )
+            count += 1
+
+        # 2. Recover any jobs that were in transient states when the server stopped
+        transient_states = (
+            JobState.DOWNLOADING.value,
+            JobState.GENERATING_AUDIO.value,
+            JobState.PREVIEW_QUEUED.value,
+            JobState.PREVIEW_RENDERING.value,
+            JobState.FINAL_QUEUED.value,
+            JobState.RENDERING.value,
+            JobState.UPLOADING.value,
+        )
+        placeholders = ",".join("?" for _ in transient_states)
+        stuck_jobs = conn.execute(
+            f"SELECT job_id FROM jobs WHERE status IN ({placeholders})",
+            transient_states
+        ).fetchall()
+
+        for r in stuck_jobs:
+            conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, stage = 'interrupted', error_message = ?, updated_at = ?
+                WHERE job_id = ?
+                """,
+                (JobState.INTERRUPTED.value, "Server restarted while task was processing.", now, r["job_id"])
+            )
+            count += 1
+
+        return count
+
     # ---------------- History & Active Jobs ----------------
     def get_user_active_job(self, user_id: int, chat_id: int) -> Job | None:
         conn = self.db.get_connection()
@@ -331,6 +391,7 @@ class JobStorage:
             JobState.RENDERING.value,
             JobState.UPLOADING.value,
             JobState.DELIVERY_FAILED.value,
+            JobState.INTERRUPTED.value,
         )
         placeholders = ",".join("?" for _ in active_statuses)
         row = conn.execute(

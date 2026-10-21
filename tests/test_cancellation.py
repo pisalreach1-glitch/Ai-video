@@ -49,3 +49,23 @@ async def test_worker_cancellation_sets_job_state(temp_job_storage):
     assert pool.is_cancelled(job.job_id) is True
     updated = temp_job_storage.get_job(job.job_id)
     assert updated.status == JobState.CANCELLED
+
+def test_recover_interrupted_jobs_on_startup(temp_job_storage):
+    """Verify that jobs in processing or queued states are safely recovered to INTERRUPTED."""
+    job1 = temp_job_storage.create_job(user_id=1, chat_id=1)
+    temp_job_storage.set_job_status(job1.job_id, JobState.RENDERING)
+    temp_job_storage.enqueue_task(job1.job_id, 1, 1, "final")
+    # Simulate worker claiming the task so it becomes 'processing'
+    temp_job_storage.claim_next_task()
+
+    job2 = temp_job_storage.create_job(user_id=2, chat_id=2)
+    temp_job_storage.set_job_status(job2.job_id, JobState.PREVIEW_RENDERING)
+
+    recovered = temp_job_storage.recover_interrupted_jobs()
+    assert recovered >= 2
+
+    j1_after = temp_job_storage.get_job(job1.job_id)
+    assert j1_after.status == JobState.INTERRUPTED
+
+    j2_after = temp_job_storage.get_job(job2.job_id)
+    assert j2_after.status == JobState.INTERRUPTED

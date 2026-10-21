@@ -62,3 +62,24 @@ async def test_render_source_without_audio_handles_gracefully(session_media_dir,
     info = probe_media(out)
     assert info.has_audio
     assert abs(info.duration - 2.0) < 0.2
+
+@pytest.mark.asyncio
+async def test_render_short_source_audio_preserves_full_narration_duration(session_media_dir, tmp_path):
+    """Verify that when source audio (2.0s) is shorter than narration (3.0s), narration is not truncated."""
+    src = session_media_dir["video_with_audio"] # 2.0s duration
+    audio = session_media_dir["audio_sample"]   # 3.0s duration
+    out = tmp_path / "long_narration_mix.mp4"
+
+    settings = VoiceSettings(source_audio_mode="low_mix")
+    await render_video(
+        source_path=src,
+        voice_audio_path=audio,
+        output_path=out,
+        settings=settings,
+        target_duration=3.0,
+    )
+
+    info = probe_media(out)
+    assert info.has_audio
+    # The output duration must be 3.0s (not truncated to 2.0s)
+    assert abs(info.duration - 3.0) < 0.2

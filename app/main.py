@@ -33,6 +33,12 @@ async def main() -> None:
     if cleaned > 0:
         logger.info(f"Cleaned up {cleaned} expired jobs on startup.")
 
+    # Recover any interrupted jobs from previous shutdown
+    from app.storage.jobs import job_storage
+    interrupted_count = job_storage.recover_interrupted_jobs()
+    if interrupted_count > 0:
+        logger.info(f"Recovered {interrupted_count} interrupted jobs from previous run.")
+
     # Initialize Bot and Dispatcher
     bot = Bot(
         token=config.telegram_bot_token,

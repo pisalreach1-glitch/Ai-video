@@ -25,19 +25,20 @@ def build_audio_filter(
     """
     Construct audio filtergraph:
     - If mode is mute or source lacks audio: take only AI narration [1:a]
-    - If mode is low_mix and source has audio: mix source at 15% with AI at 100%
+    - If mode is low_mix and source has audio: mix narration as master [1:a] with ducked,
+      silence-padded source audio [0:a] so narration is NEVER truncated by short source audio.
     """
     if source_audio_mode == "low_mix" and source_has_audio:
-        # Duck source audio to 15% volume, keep narration at 100%, mix together
+        # Narration is the master input [1:a], duck source to 15% and pad with silence
         filter_str = (
-            f"[0:a]volume=0.15,atrim=duration={target_duration},asetpts=PTS-STARTPTS[a0]; "
-            f"[1:a]volume=1.0,atrim=duration={target_duration},asetpts=PTS-STARTPTS[a1]; "
-            f"[a0][a1]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+            f"[1:a]volume=1.0,atrim=0:{target_duration:.3f},asetpts=PTS-STARTPTS[anarr]; "
+            f"[0:a]volume=0.15,atrim=0:{target_duration:.3f},apad,asetpts=PTS-STARTPTS[asrc]; "
+            f"[anarr][asrc]amix=inputs=2:duration=first:dropout_transition=0,atrim=0:{target_duration:.3f}[aout]"
         )
         return filter_str, ["[aout]"]
     else:
         # Default: Pure AI voice narration
-        filter_str = f"[1:a]volume=1.0,atrim=duration={target_duration},asetpts=PTS-STARTPTS[aout]"
+        filter_str = f"[1:a]volume=1.0,atrim=0:{target_duration:.3f},asetpts=PTS-STARTPTS[aout]"
         return filter_str, ["[aout]"]
 
 def validate_final_mp4(

@@ -18,6 +18,16 @@ VOICES = {
     },
 }
 
+# Short voice IDs to keep Telegram callback_data well under 64 bytes
+VOICE_SHORT_TO_NAME = {
+    "f": VOICE_FEMALE,
+    "m": VOICE_MALE,
+}
+VOICE_NAME_TO_SHORT = {
+    VOICE_FEMALE: "f",
+    VOICE_MALE: "m",
+}
+
 # Speed presets
 SPEED_SLOW = "-15%"
 SPEED_NORMAL = "+0%"
@@ -51,7 +61,7 @@ AUDIO_MODES = {
     AUDIO_LOW_MIX: {"id": AUDIO_LOW_MIX, "label": "🔉 រក្សាសំឡេងដើមតិចៗ (15%)"},
 }
 
-# Aspect ratio options
+# Aspect ratio options (use colon-free IDs in callbacks to prevent split(":") bugs)
 RATIO_ORIGINAL = "original"
 RATIO_VERTICAL = "9:16"
 RATIO_SQUARE = "1:1"
@@ -59,6 +69,17 @@ ASPECT_RATIOS = {
     RATIO_ORIGINAL: {"id": RATIO_ORIGINAL, "label": "📐 ទំហំដើម (Original)"},
     RATIO_VERTICAL: {"id": RATIO_VERTICAL, "label": "📱 បញ្ឈរ 9:16 (TikTok/Reel)"},
     RATIO_SQUARE: {"id": RATIO_SQUARE, "label": "⏹️ ការ៉េ 1:1 (Square)"},
+}
+
+RATIO_SHORT_TO_VAL = {
+    "orig": RATIO_ORIGINAL,
+    "vert": RATIO_VERTICAL,
+    "sq": RATIO_SQUARE,
+}
+RATIO_VAL_TO_SHORT = {
+    RATIO_ORIGINAL: "orig",
+    RATIO_VERTICAL: "vert",
+    RATIO_SQUARE: "sq",
 }
 
 # Framing mode options

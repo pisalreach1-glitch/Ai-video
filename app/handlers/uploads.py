@@ -27,15 +27,31 @@ async def cb_source_upload(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(F.video | F.document)
 async def handle_video_upload(message: Message, state: FSMContext, bot: Bot) -> None:
-    curr_state = await state.get_state()
-    # Accept upload if in awaiting_video_source or idle (new workflow started by uploading video)
-    data = await state.get_data()
-    job_id = data.get("job_id")
-
     user_id = message.from_user.id
     chat_id = message.chat.id
 
-    if not job_id:
+    # Protect active rendering job from being overwritten
+    active_job = job_storage.get_user_active_job(user_id, chat_id)
+    if active_job and active_job.status in (
+        JobState.PREVIEW_QUEUED,
+        JobState.PREVIEW_RENDERING,
+        JobState.FINAL_QUEUED,
+        JobState.RENDERING,
+        JobState.UPLOADING,
+    ):
+        await message.reply(
+            "⚠️ លោកអ្នកមានការងារវីដេអូមួយកំពុងដំណើរការ Render រួចហើយ។\n"
+            "សូមរង់ចាំឱ្យការងារនេះបញ្ចប់ ឬចុចបោះបង់ (Cancel) សិន មុននឹង Upload វីដេអូថ្មី។",
+            reply_markup=job_in_progress_keyboard(active_job.job_id),
+        )
+        return
+
+    # Check whether to reuse awaiting_source job or create a fresh one
+    data = await state.get_data()
+    job_id = data.get("job_id")
+    existing_job = job_storage.get_job(job_id) if job_id else None
+
+    if not existing_job or existing_job.source_path or existing_job.status != JobState.AWAITING_SOURCE:
         job = job_storage.create_job(user_id=user_id, chat_id=chat_id, source_type="upload")
         job_id = job.job_id
         await state.update_data(job_id=job_id)

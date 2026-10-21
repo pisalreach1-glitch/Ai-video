@@ -81,8 +81,8 @@ def voice_picker_keyboard(job_id: str, revision_id: int, current_voice: str) -> 
     sreymom_mark = " ✓" if current_voice == opt.VOICE_FEMALE else ""
     piseth_mark = " ✓" if current_voice == opt.VOICE_MALE else ""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"👩 សំឡេងស្រី (Sreymom){sreymom_mark}", callback_data=f"v_pick:{opt.VOICE_FEMALE}:{job_id}:{revision_id}")],
-        [InlineKeyboardButton(text=f"👨 សំឡេងប្រុស (Piseth){piseth_mark}", callback_data=f"v_pick:{opt.VOICE_MALE}:{job_id}:{revision_id}")],
+        [InlineKeyboardButton(text=f"👩 សំឡេងស្រី (Sreymom){sreymom_mark}", callback_data=f"v_pick:f:{job_id}:{revision_id}")],
+        [InlineKeyboardButton(text=f"👨 សំឡេងប្រុស (Piseth){piseth_mark}", callback_data=f"v_pick:m:{job_id}:{revision_id}")],
         [InlineKeyboardButton(text="🔊 សាកស្ដាប់សំឡេង (Sample)", callback_data=f"v_sample:{job_id}:{revision_id}")],
         [InlineKeyboardButton(text="⬅️ ត្រឡប់ក្រោយ", callback_data=f"cfg_customize:{job_id}:{revision_id}")],
     ])
@@ -149,9 +149,9 @@ def format_picker_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="-- សមាមាត្រ (Aspect Ratio) --", callback_data="noop")],
         [
-            InlineKeyboardButton(text=f"📐 ដើម{orig_mark}", callback_data=f"fmt_rat:{opt.RATIO_ORIGINAL}:{job_id}:{revision_id}"),
-            InlineKeyboardButton(text=f"📱 9:16{vert_mark}", callback_data=f"fmt_rat:{opt.RATIO_VERTICAL}:{job_id}:{revision_id}"),
-            InlineKeyboardButton(text=f"⏹️ 1:1{sq_mark}", callback_data=f"fmt_rat:{opt.RATIO_SQUARE}:{job_id}:{revision_id}"),
+            InlineKeyboardButton(text=f"📐 ដើម{orig_mark}", callback_data=f"fmt_rat:orig:{job_id}:{revision_id}"),
+            InlineKeyboardButton(text=f"📱 9:16{vert_mark}", callback_data=f"fmt_rat:vert:{job_id}:{revision_id}"),
+            InlineKeyboardButton(text=f"⏹️ 1:1{sq_mark}", callback_data=f"fmt_rat:sq:{job_id}:{revision_id}"),
         ],
         [InlineKeyboardButton(text="-- របៀបតម្រឹម (Framing) --", callback_data="noop")],
         [
@@ -217,6 +217,12 @@ def delivery_retry_keyboard(job_id: str, revision_id: int) -> InlineKeyboardMark
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 ព្យាយាមផ្ញើម្តងទៀត", callback_data=f"retry_dlv:{job_id}:{revision_id}")],
         [InlineKeyboardButton(text="🏠 ម៉ឺនុយដើម", callback_data="nav_main")],
+    ])
+
+def interrupted_job_keyboard(job_id: str, revision_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 សាកល្បងម្ដងទៀត (Retry)", callback_data=f"retry_job:{job_id}:{revision_id}")],
+        [InlineKeyboardButton(text="❌ បោះបង់ និងចាប់ផ្ដើមថ្មី", callback_data=f"job_cancel:{job_id}")],
     ])
 
 def history_keyboard(page: int, total_pages: int, job_items: list[dict]) -> InlineKeyboardMarkup:

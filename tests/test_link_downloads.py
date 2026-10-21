@@ -83,3 +83,37 @@ async def test_download_byte_limit_enforcement(tmp_path, monkeypatch):
 
     # Destination file must not be left behind
     assert not dest.exists()
+
+@pytest.mark.asyncio
+async def test_download_direct_url_blocks_redirect_to_private_ip(tmp_path, monkeypatch):
+    """Ensure redirect to private/internal IP is rejected by SSRF guard."""
+    from app.services.downloader import download_direct_url, DownloadSecurityError
+    dest = tmp_path / "redirect_dest.mp4"
+
+    class RedirectResponse:
+        status = 302
+        headers = {"Location": "http://127.0.0.1:8080/evil.mp4"}
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            pass
+
+    class MockSession:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            pass
+        def get(self, url, **kwargs):
+            return RedirectResponse()
+
+    monkeypatch.setattr("aiohttp.ClientSession", MockSession)
+
+    with pytest.raises(DownloadSecurityError):
+        await download_direct_url(
+            url="https://example.com/redirect",
+            destination_path=dest,
+            max_bytes=10000,
+            timeout_seconds=5,
+        )

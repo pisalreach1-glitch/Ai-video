@@ -34,15 +34,30 @@ async def cb_source_link(call: CallbackQuery, state: FSMContext) -> None:
 async def handle_url_input(message: Message, state: FSMContext) -> None:
     url = message.text.strip()
     data = await state.get_data()
-    job_id = data.get("job_id")
-
     user_id = message.from_user.id
     chat_id = message.chat.id
 
-    if not job_id:
-        job = job_storage.create_job(user_id=user_id, chat_id=chat_id, source_type="link", source_url=url)
-        job_id = job.job_id
-        await state.update_data(job_id=job_id)
+    # Prevent overwriting an active job that is currently rendering or downloading
+    existing_job_id = data.get("job_id")
+    if existing_job_id:
+        existing_job = job_storage.get_job(existing_job_id)
+        if existing_job and existing_job.status in (
+            JobState.DOWNLOADING,
+            JobState.PREVIEW_QUEUED,
+            JobState.PREVIEW_RENDERING,
+            JobState.FINAL_QUEUED,
+            JobState.RENDERING,
+            JobState.UPLOADING,
+        ):
+            await message.reply(
+                "⚠️ លោកអ្នកមានការងារមួយកំពុងដំណើរការ។ សូមរង់ចាំឱ្យការងារនោះចប់សិន ឬចុច Cancel មុននឹងផ្ញើ link ថ្មី។"
+            )
+            return
+
+    # Always create a new clean job instance to prevent overwriting source files
+    job = job_storage.create_job(user_id=user_id, chat_id=chat_id, source_type="link", source_url=url)
+    job_id = job.job_id
+    await state.update_data(job_id=job_id)
 
     status_msg = await message.reply(texts.LINK_DOWNLOADING, reply_markup=link_download_keyboard(job_id))
     dest_path = workspace.get_source_video_path(job_id)

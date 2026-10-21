@@ -1,6 +1,7 @@
 """Audio preview, video preview, duration policy, and approval handlers."""
 import logging
 from pathlib import Path
+from typing import Callable
 from aiogram import Router, F, Bot
 from aiogram.types import CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
@@ -8,8 +9,10 @@ from app.config import config
 from app.domain.states import WizardStep, JobState
 from app.storage.jobs import job_storage
 from app.storage.workspaces import workspace
+from app.jobs.worker import worker_pool
 from app.services.tts import generate_narration, TTSTimingError
 from app.services.subtitles import generate_srt, generate_ass
+from app.handlers.common import safe_edit_message, safe_edit_reply_markup, verify_callback_job
 from app.ui import texts_km as texts
 from app.ui import options as opt
 from app.ui.keyboards import (
@@ -23,7 +26,11 @@ from app.ui.keyboards import (
 logger = logging.getLogger(__name__)
 router = Router(name="previews")
 
-async def _generate_audio_and_subtitles(job_id: str, rev_id: int) -> tuple[Path, float, Path, Path]:
+async def _generate_audio_and_subtitles(
+    job_id: str,
+    rev_id: int,
+    cancel_check: Callable[[], bool] | None = None
+) -> tuple[Path, float, Path, Path]:
     job = job_storage.get_job(job_id)
     rev = job_storage.get_revision(job_id, rev_id)
     if not job or not rev:
@@ -33,13 +40,17 @@ async def _generate_audio_and_subtitles(job_id: str, rev_id: int) -> tuple[Path,
     srt_dest = workspace.get_subtitles_srt_path(job_id, rev_id)
     ass_dest = workspace.get_subtitles_ass_path(job_id, rev_id)
 
-    # Generate TTS audio and timing events
+    # Generate TTS audio and timing events with cancellation check
     _, duration, timing_events = await generate_narration(
         text=rev.narration_text,
         voice=rev.settings.voice,
         rate=rev.settings.speed,
         output_audio_path=audio_dest,
+        cancel_check=cancel_check,
     )
+
+    if cancel_check and cancel_check():
+        raise RuntimeError("Generation cancelled.")
 
     # Generate SRT
     generate_srt(timing_events, srt_dest)
@@ -79,24 +90,32 @@ async def cb_proceed_to_audio(call: CallbackQuery, state: FSMContext, bot: Bot) 
         _, job_id, rev_id_str = call.data.split(":")
         rev_id = int(rev_id_str)
 
-    if not job_id or not rev_id:
+    if not job_id or not await verify_callback_job(call, job_id):
+        return
+
+    rev = job_storage.get_revision(job_id, rev_id) if rev_id else job_storage.get_latest_revision(job_id)
+    if not rev:
         await call.answer(texts.INVALID_ACTION, show_alert=True)
         return
 
-    job = job_storage.get_job(job_id)
-    rev = job_storage.get_revision(job_id, rev_id)
-    if not job or not rev:
-        await call.answer(texts.INVALID_ACTION, show_alert=True)
-        return
+    rev_id = rev.revision_id
+    await safe_edit_message(call, texts.AUDIO_GENERATING)
 
-    await call.message.edit_text(texts.AUDIO_GENERATING)
+    cancel_check = lambda: worker_pool.is_cancelled(job_id)
 
     try:
         job_storage.set_job_status(job_id, JobState.GENERATING_AUDIO)
-        audio_path, a_dur, _, _ = await _generate_audio_and_subtitles(job_id, rev_id)
-        job_storage.set_job_status(job_id, JobState.AWAITING_AUDIO_REVIEW)
+        audio_path, a_dur, _, _ = await _generate_audio_and_subtitles(
+            job_id, rev_id, cancel_check=cancel_check
+        )
 
-        v_dur = job.source_media_info.duration if job.source_media_info else 0.0
+        if cancel_check():
+            await safe_edit_message(call, texts.JOB_CANCELLED)
+            return
+
+        job_storage.set_job_status(job_id, JobState.AWAITING_AUDIO_REVIEW)
+        job = job_storage.get_job(job_id)
+        v_dur = job.source_media_info.duration if (job and job.source_media_info) else 0.0
 
         # Send generated audio to user
         audio_file = FSInputFile(str(audio_path), filename=f"narration_{job_id[:6]}.mp3")
@@ -126,14 +145,19 @@ async def cb_proceed_to_audio(call: CallbackQuery, state: FSMContext, bot: Bot) 
     except TTSTimingError as e:
         logger.warning(f"TTS timing error for job {job_id}: {e}")
         job_storage.set_job_status(job_id, JobState.FAILED, error_message=str(e))
-        await call.message.edit_text(
+        await safe_edit_message(
+            call,
             f"❌ មិនអាចទទួលទិន្នន័យពេលវេលាពី Edge-TTS បានទេ៖ {e}\nសូមព្យាយាមម្ដងទៀត។",
             reply_markup=settings_menu_keyboard(job_id, rev_id),
         )
     except Exception as e:
+        if cancel_check():
+            await safe_edit_message(call, texts.JOB_CANCELLED)
+            return
         logger.exception(f"Error generating audio for job {job_id}: {e}")
         job_storage.set_job_status(job_id, JobState.FAILED, error_message=str(e))
-        await call.message.edit_text(
+        await safe_edit_message(
+            call,
             f"❌ ការបង្កើតសំឡេងបានបរាជ័យ៖ {e}",
             reply_markup=settings_menu_keyboard(job_id, rev_id),
         )
@@ -141,6 +165,9 @@ async def cb_proceed_to_audio(call: CallbackQuery, state: FSMContext, bot: Bot) 
 @router.callback_query(F.data.startswith("dur_pick:"))
 async def cb_duration_policy_picked(call: CallbackQuery, state: FSMContext) -> None:
     _, policy, job_id, rev_id_str = call.data.split(":")
+    if not await verify_callback_job(call, job_id):
+        return
+
     rev_id = int(rev_id_str)
     rev = job_storage.get_revision(job_id, rev_id)
     if not rev:
@@ -157,6 +184,9 @@ async def cb_duration_policy_picked(call: CallbackQuery, state: FSMContext) -> N
 @router.callback_query(F.data.startswith("aud_next:"))
 async def cb_audio_next_to_preview(call: CallbackQuery, state: FSMContext) -> None:
     _, job_id, rev_id_str = call.data.split(":")
+    if not await verify_callback_job(call, job_id):
+        return
+
     rev_id = int(rev_id_str)
     await _start_video_preview(call, job_id, rev_id, state)
 
@@ -174,7 +204,8 @@ async def _start_video_preview(call: CallbackQuery, job_id: str, rev_id: int, st
         return
 
     await state.set_state(WizardStep.preview_review)
-    await call.message.edit_text(
+    await safe_edit_message(
+        call,
         texts.PREVIEW_GENERATING,
         reply_markup=job_in_progress_keyboard(job_id),
     )
@@ -185,14 +216,23 @@ async def cb_approve_final(call: CallbackQuery, state: FSMContext) -> None:
     _, job_id, rev_id_str = call.data.split(":")
     rev_id = int(rev_id_str)
 
+    if not await verify_callback_job(call, job_id):
+        return
+
     job = job_storage.get_job(job_id)
-    if not job:
+    rev = job_storage.get_revision(job_id, rev_id)
+    if not job or not rev:
         await call.answer(texts.INVALID_ACTION, show_alert=True)
         return
 
     # Prevent approval of outdated revision
     if job.current_revision_id != rev_id:
         await call.answer(texts.APPROVAL_OUTDATED, show_alert=True)
+        return
+
+    # Must be previewed before approval
+    if not rev.preview_path or not Path(rev.preview_path).exists():
+        await call.answer("⚠️ សូមពិនិត្យមើល Video Preview នៃកំណែប្រែនេះជាមុនសិន។", show_alert=True)
         return
 
     # Prevent duplicate clicks
@@ -207,7 +247,10 @@ async def cb_approve_final(call: CallbackQuery, state: FSMContext) -> None:
         return
 
     await state.set_state(WizardStep.rendering_in_progress)
-    await call.message.edit_text(
+
+    # Safely remove buttons from preview video message and send new progress message
+    await safe_edit_reply_markup(call, reply_markup=None)
+    await call.message.answer(
         texts.JOB_RENDERING,
         reply_markup=job_in_progress_keyboard(job_id),
     )
@@ -217,9 +260,15 @@ async def cb_approve_final(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("edit_text:"))
 async def cb_edit_text(call: CallbackQuery, state: FSMContext) -> None:
     _, job_id, rev_id_str = call.data.split(":")
+    if not await verify_callback_job(call, job_id):
+        return
+
     await state.update_data(job_id=job_id, revision_id=int(rev_id_str))
     await state.set_state(WizardStep.awaiting_narration_text)
-    await call.message.edit_text(
+
+    # Remove buttons from video message if clicked on video
+    await safe_edit_reply_markup(call, reply_markup=None)
+    await call.message.answer(
         f"✏️ **កែសម្រួលអត្ថបទអាន៖**\n\n{texts.NARRATION_PROMPT.format(max_chars=config.max_narration_chars)}"
     )
     await call.answer()
@@ -230,6 +279,9 @@ async def cb_edit_text(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("edit_fmt:"))
 async def cb_edit_settings_forward(call: CallbackQuery, state: FSMContext) -> None:
     action, job_id, rev_id_str = call.data.split(":")
+    if not await verify_callback_job(call, job_id):
+        return
+
     rev = job_storage.get_revision(job_id, int(rev_id_str))
     if not rev:
         await call.answer(texts.INVALID_ACTION, show_alert=True)
@@ -237,5 +289,7 @@ async def cb_edit_settings_forward(call: CallbackQuery, state: FSMContext) -> No
 
     from app.handlers.settings import _render_settings_summary
     text = _render_settings_summary(rev)
-    await call.message.edit_text(text, reply_markup=settings_menu_keyboard(job_id, rev.revision_id))
+
+    await safe_edit_reply_markup(call, reply_markup=None)
+    await call.message.answer(text, reply_markup=settings_menu_keyboard(job_id, rev.revision_id))
     await call.answer()
