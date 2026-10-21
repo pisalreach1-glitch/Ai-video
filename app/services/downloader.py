@@ -5,7 +5,7 @@ import ipaddress
 import logging
 import urllib.parse
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 import aiohttp
 import yt_dlp
 from app.config import config

@@ -163,3 +163,29 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         f.write("\n".join(dialogue_lines) + "\n")
 
     return dest
+
+def parse_srt_events(srt_path: Path | str) -> list[dict[str, Any]]:
+    """Parse timing events from an existing SRT file."""
+    from timecode_utils import parse_timecode
+    path = Path(srt_path)
+    if not path.exists():
+        return []
+    content = path.read_text(encoding="utf-8")
+    blocks = re.split(r'\n\s*\n', content.strip())
+    events: list[dict[str, Any]] = []
+    for b in blocks:
+        lines = [line.strip() for line in b.splitlines() if line.strip()]
+        if len(lines) >= 2:
+            time_idx = 1 if "-->" in lines[1] else (0 if "-->" in lines[0] else -1)
+            if time_idx != -1:
+                tc = lines[time_idx]
+                parts = tc.split("-->")
+                if len(parts) == 2:
+                    try:
+                        start = parse_timecode(parts[0].strip(), allow_legacy=True)
+                        end = parse_timecode(parts[1].strip(), allow_legacy=True)
+                        text = " ".join(lines[time_idx + 1:])
+                        events.append({"start": start, "end": end, "text": text})
+                    except Exception:
+                        pass
+    return events

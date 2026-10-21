@@ -11,7 +11,7 @@ from app.storage.jobs import job_storage
 from app.storage.workspaces import workspace
 from app.jobs.worker import worker_pool
 from app.services.tts import generate_narration, TTSTimingError
-from app.services.subtitles import generate_srt, generate_ass
+from app.services.subtitles import generate_srt, generate_ass, parse_srt_events
 from app.handlers.common import safe_edit_message, safe_edit_reply_markup, verify_callback_job
 from app.ui import texts_km as texts
 from app.ui import options as opt
@@ -40,20 +40,51 @@ async def _generate_audio_and_subtitles(
     srt_dest = workspace.get_subtitles_srt_path(job_id, rev_id)
     ass_dest = workspace.get_subtitles_ass_path(job_id, rev_id)
 
-    # Generate TTS audio and timing events with cancellation check
-    _, duration, timing_events = await generate_narration(
-        text=rev.narration_text,
-        voice=rev.settings.voice,
-        rate=rev.settings.speed,
-        output_audio_path=audio_dest,
-        cancel_check=cancel_check,
-    )
+    # Check if we can reuse existing audio and timing from this or an earlier revision
+    reusable_rev = None
+    if rev.audio_path and Path(rev.audio_path).exists() and rev.audio_duration > 0 and rev.subtitles_srt and Path(rev.subtitles_srt).exists():
+        reusable_rev = rev
+    else:
+        for p_id in range(rev_id - 1, 0, -1):
+            cand = job_storage.get_revision(job_id, p_id)
+            if (
+                cand
+                and cand.narration_text.strip() == rev.narration_text.strip()
+                and cand.settings.voice == rev.settings.voice
+                and cand.settings.speed == rev.settings.speed
+                and cand.audio_path
+                and Path(cand.audio_path).exists()
+                and cand.subtitles_srt
+                and Path(cand.subtitles_srt).exists()
+                and cand.audio_duration > 0
+            ):
+                reusable_rev = cand
+                break
 
-    if cancel_check and cancel_check():
-        raise RuntimeError("Generation cancelled.")
+    if reusable_rev:
+        logger.info(f"Reusing audio and timing from revision {reusable_rev.revision_id} for revision {rev_id}")
+        import shutil
+        if str(reusable_rev.audio_path) != str(audio_dest):
+            shutil.copyfile(reusable_rev.audio_path, audio_dest)
+        if str(reusable_rev.subtitles_srt) != str(srt_dest):
+            shutil.copyfile(reusable_rev.subtitles_srt, srt_dest)
+        duration = reusable_rev.audio_duration
+        timing_events = parse_srt_events(srt_dest)
+    else:
+        # Generate TTS audio and timing events with cancellation check
+        _, duration, timing_events = await generate_narration(
+            text=rev.narration_text,
+            voice=rev.settings.voice,
+            rate=rev.settings.speed,
+            output_audio_path=audio_dest,
+            cancel_check=cancel_check,
+        )
 
-    # Generate SRT
-    generate_srt(timing_events, srt_dest)
+        if cancel_check and cancel_check():
+            raise RuntimeError("Generation cancelled.")
+
+        # Generate SRT
+        generate_srt(timing_events, srt_dest)
 
     # Generate styled ASS
     res_x = 1080

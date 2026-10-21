@@ -135,6 +135,9 @@ class JobStorage:
         job_id: str,
         narration_text: str,
         settings: VoiceSettings,
+        audio_path: str | None = None,
+        audio_duration: float = 0.0,
+        subtitles_srt: str | None = None,
     ) -> Revision:
         conn = self.db.get_connection()
         now = time.time()
@@ -158,9 +161,9 @@ class JobStorage:
                 next_rev,
                 narration_text,
                 settings_json,
-                None,
-                0.0,
-                None,
+                audio_path,
+                audio_duration,
+                subtitles_srt,
                 None,
                 None,
                 None,
@@ -178,6 +181,9 @@ class JobStorage:
             job_id=job_id,
             narration_text=narration_text,
             settings=settings,
+            audio_path=audio_path,
+            audio_duration=audio_duration,
+            subtitles_srt=subtitles_srt,
             created_at=now,
         )
 
@@ -322,23 +328,25 @@ class JobStorage:
 
         # 1. Recover any tasks stuck in the render_queue
         rows = conn.execute(
-            "SELECT job_id FROM render_queue WHERE status IN ('processing', 'queued')"
+            "SELECT job_id, task_type FROM render_queue WHERE status IN ('processing', 'queued')"
         ).fetchall()
 
         count = 0
         for r in rows:
             job_id = r["job_id"]
+            task_type = r["task_type"]
             conn.execute(
                 "UPDATE render_queue SET status = 'interrupted', completed_at = ? WHERE job_id = ?",
                 (now, job_id)
             )
+            interrupted_stage = f"interrupted:{task_type}_render"
             conn.execute(
                 """
                 UPDATE jobs
-                SET status = ?, stage = 'interrupted', error_message = ?, updated_at = ?
+                SET status = ?, stage = ?, error_message = ?, updated_at = ?
                 WHERE job_id = ?
                 """,
-                (JobState.INTERRUPTED.value, "Server restarted while task was processing.", now, job_id)
+                (JobState.INTERRUPTED.value, interrupted_stage, "Server restarted while task was processing.", now, job_id)
             )
             count += 1
 
@@ -354,18 +362,20 @@ class JobStorage:
         )
         placeholders = ",".join("?" for _ in transient_states)
         stuck_jobs = conn.execute(
-            f"SELECT job_id FROM jobs WHERE status IN ({placeholders})",
+            f"SELECT job_id, status FROM jobs WHERE status IN ({placeholders})",
             transient_states
         ).fetchall()
 
         for r in stuck_jobs:
+            old_status = r["status"]
+            interrupted_stage = f"interrupted:{old_status}"
             conn.execute(
                 """
                 UPDATE jobs
-                SET status = ?, stage = 'interrupted', error_message = ?, updated_at = ?
+                SET status = ?, stage = ?, error_message = ?, updated_at = ?
                 WHERE job_id = ?
                 """,
-                (JobState.INTERRUPTED.value, "Server restarted while task was processing.", now, r["job_id"])
+                (JobState.INTERRUPTED.value, interrupted_stage, "Server restarted while task was processing.", now, r["job_id"])
             )
             count += 1
 

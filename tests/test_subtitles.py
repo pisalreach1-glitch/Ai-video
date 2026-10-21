@@ -62,3 +62,20 @@ def test_ass_styling_options(tmp_path):
     assert "&H002BF7FF" in content
     # Event text present
     assert "Dialogue: 0,0:00:00.50,0:00:02.50,Default,,0,0,0,,អក្សររត់" in content
+
+def test_parse_srt_events(tmp_path):
+    """Ensure parse_srt_events correctly extracts timing and text cues from SRT."""
+    from app.services.subtitles import parse_srt_events
+    events = [
+        {"start": 1.5, "end": 3.0, "text": "តេស្តទីមួយ"},
+        {"start": 3.2, "end": 5.0, "text": "តេស្តទីពីរ"},
+    ]
+    srt_file = tmp_path / "parse_test.srt"
+    generate_srt(events, srt_file)
+
+    parsed = parse_srt_events(srt_file)
+    assert len(parsed) == 2
+    assert abs(parsed[0]["start"] - 1.5) < 0.05
+    assert abs(parsed[0]["end"] - 3.0) < 0.05
+    assert parsed[0]["text"] == "តេស្តទីមួយ"
+    assert parsed[1]["text"] == "តេស្តទីពីរ"

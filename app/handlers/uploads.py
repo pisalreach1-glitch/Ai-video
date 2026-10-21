@@ -14,6 +14,7 @@ from app.ui.keyboards import (
     caption_confirm_keyboard,
     narration_confirm_keyboard,
     source_choice_keyboard,
+    job_in_progress_keyboard,
 )
 
 logger = logging.getLogger(__name__)

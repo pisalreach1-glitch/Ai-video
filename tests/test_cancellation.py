@@ -66,6 +66,8 @@ def test_recover_interrupted_jobs_on_startup(temp_job_storage):
 
     j1_after = temp_job_storage.get_job(job1.job_id)
     assert j1_after.status == JobState.INTERRUPTED
+    assert "interrupted" in j1_after.stage
 
     j2_after = temp_job_storage.get_job(job2.job_id)
     assert j2_after.status == JobState.INTERRUPTED
+    assert j2_after.stage == "interrupted:preview_rendering"

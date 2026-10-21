@@ -46,10 +46,13 @@ async def safe_edit_reply_markup(call: CallbackQuery, reply_markup=None) -> None
 async def verify_callback_job(
     call: CallbackQuery,
     job_id: str,
-    disallowed_states: tuple = (JobState.FINAL_QUEUED, JobState.RENDERING, JobState.UPLOADING)
+    expected_rev: int | None = None,
+    allowed_states: tuple | None = None,
+    disallowed_states: tuple = (JobState.FINAL_QUEUED, JobState.RENDERING, JobState.UPLOADING, JobState.COMPLETED),
 ) -> bool:
     """
-    Verify callback ownership and ensure job is not locked in rendering.
+    Verify callback ownership, revision freshness, and allowed/disallowed job states.
+    Prevents stale settings buttons from overwriting newer revisions and rejects unauthorized actions.
     """
     user_id = call.from_user.id
     chat_id = call.message.chat.id
@@ -63,8 +66,17 @@ async def verify_callback_job(
         await call.answer(texts.INVALID_ACTION, show_alert=True)
         return False
 
-    if job.status in disallowed_states:
+    if allowed_states is not None and job.status not in allowed_states:
+        await call.answer("⚠️ មិនអាចកែប្រែបានទេ ស្ថានភាពការងារបច្ចុប្បន្នមិនអនុញ្ញាតឡើយ។", show_alert=True)
+        return False
+
+    if disallowed_states and job.status in disallowed_states:
         await call.answer(texts.ALREADY_PROCESSING, show_alert=True)
         return False
+
+    if expected_rev is not None:
+        if expected_rev != job.current_revision_id:
+            await call.answer("⚠️ Settings ឬ Revision នេះហួសសម័យហើយ។ សូមប្រើប្រាស់ម៉ឺនុយចុងក្រោយបំផុត។", show_alert=True)
+            return False
 
     return True

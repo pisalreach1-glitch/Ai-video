@@ -54,7 +54,7 @@ async def cb_settings_customize(call: CallbackQuery, state: FSMContext) -> None:
             job_id = parts[1]
             rev_id = int(parts[2])
 
-    if not job_id or not await verify_callback_job(call, job_id):
+    if not job_id or not await verify_callback_job(call, job_id, expected_rev=rev_id):
         return
 
     rev = job_storage.get_revision(job_id, rev_id) if rev_id else job_storage.get_latest_revision(job_id)
@@ -70,7 +70,7 @@ async def cb_settings_customize(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("set_voice:"))
 async def cb_set_voice(call: CallbackQuery) -> None:
     _, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev_id_str)):
         return
 
     rev = job_storage.get_revision(job_id, int(rev_id_str))
@@ -88,7 +88,7 @@ async def cb_set_voice(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("v_pick:"))
 async def cb_v_pick(call: CallbackQuery, state: FSMContext) -> None:
     _, short_voice, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev_id_str)):
         return
 
     rev = job_storage.get_revision(job_id, int(rev_id_str))
@@ -97,7 +97,7 @@ async def cb_v_pick(call: CallbackQuery, state: FSMContext) -> None:
         return
 
     voice = opt.VOICE_SHORT_TO_NAME.get(short_voice, short_voice)
-    # Create new revision on change
+    # Create new revision on change (voice changed -> fresh audio needed)
     new_settings = VoiceSettings.from_dict(rev.settings.to_dict())
     new_settings.voice = voice
     new_rev = job_storage.create_revision(job_id, rev.narration_text, new_settings)
@@ -112,7 +112,7 @@ async def cb_v_pick(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("v_sample:"))
 async def cb_v_sample(call: CallbackQuery, bot: Bot) -> None:
     _, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev_id_str)):
         return
 
     rev = job_storage.get_revision(job_id, int(rev_id_str))
@@ -133,7 +133,7 @@ async def cb_v_sample(call: CallbackQuery, bot: Bot) -> None:
 @router.callback_query(F.data.startswith("set_speed:"))
 async def cb_set_speed(call: CallbackQuery) -> None:
     _, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev_id_str)):
         return
 
     rev = job_storage.get_revision(job_id, int(rev_id_str))
@@ -151,7 +151,7 @@ async def cb_set_speed(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("sp_pick:"))
 async def cb_sp_pick(call: CallbackQuery, state: FSMContext) -> None:
     _, speed, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev_id_str)):
         return
 
     rev = job_storage.get_revision(job_id, int(rev_id_str))
@@ -159,7 +159,7 @@ async def cb_sp_pick(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer(texts.INVALID_ACTION, show_alert=True)
         return
 
-    # Create new revision on change
+    # Create new revision on change (speed changed -> fresh audio needed)
     new_settings = VoiceSettings.from_dict(rev.settings.to_dict())
     new_settings.speed = speed
     new_rev = job_storage.create_revision(job_id, rev.narration_text, new_settings)
@@ -175,7 +175,7 @@ async def cb_sp_pick(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("set_sub:"))
 async def cb_set_sub(call: CallbackQuery) -> None:
     _, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev_id_str)):
         return
 
     rev = job_storage.get_revision(job_id, int(rev_id_str))
@@ -198,7 +198,7 @@ async def cb_set_sub(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("sub_tog:"))
 async def cb_sub_tog(call: CallbackQuery, state: FSMContext) -> None:
     _, flag, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev_id_str)):
         return
 
     rev = job_storage.get_revision(job_id, int(rev_id_str))
@@ -208,7 +208,13 @@ async def cb_sub_tog(call: CallbackQuery, state: FSMContext) -> None:
 
     new_settings = VoiceSettings.from_dict(rev.settings.to_dict())
     new_settings.subtitles_enabled = (flag == "1")
-    new_rev = job_storage.create_revision(job_id, rev.narration_text, new_settings)
+    # Voice/speed/text unchanged -> reuse audio
+    new_rev = job_storage.create_revision(
+        job_id, rev.narration_text, new_settings,
+        audio_path=rev.audio_path,
+        audio_duration=rev.audio_duration,
+        subtitles_srt=rev.subtitles_srt,
+    )
     await state.update_data(revision_id=new_rev.revision_id)
 
     await safe_edit_reply_markup(
@@ -225,7 +231,7 @@ async def cb_sub_tog(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("sub_col:"))
 async def cb_sub_col(call: CallbackQuery, state: FSMContext) -> None:
     _, col, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev_id_str)):
         return
 
     rev = job_storage.get_revision(job_id, int(rev_id_str))
@@ -235,7 +241,13 @@ async def cb_sub_col(call: CallbackQuery, state: FSMContext) -> None:
 
     new_settings = VoiceSettings.from_dict(rev.settings.to_dict())
     new_settings.subtitle_color = col
-    new_rev = job_storage.create_revision(job_id, rev.narration_text, new_settings)
+    # Voice/speed/text unchanged -> reuse audio
+    new_rev = job_storage.create_revision(
+        job_id, rev.narration_text, new_settings,
+        audio_path=rev.audio_path,
+        audio_duration=rev.audio_duration,
+        subtitles_srt=rev.subtitles_srt,
+    )
     await state.update_data(revision_id=new_rev.revision_id)
 
     await safe_edit_reply_markup(
@@ -252,7 +264,7 @@ async def cb_sub_col(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("sub_pos:"))
 async def cb_sub_pos(call: CallbackQuery, state: FSMContext) -> None:
     _, pos, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev_id_str)):
         return
 
     rev = job_storage.get_revision(job_id, int(rev_id_str))
@@ -262,7 +274,13 @@ async def cb_sub_pos(call: CallbackQuery, state: FSMContext) -> None:
 
     new_settings = VoiceSettings.from_dict(rev.settings.to_dict())
     new_settings.subtitle_position = pos
-    new_rev = job_storage.create_revision(job_id, rev.narration_text, new_settings)
+    # Voice/speed/text unchanged -> reuse audio
+    new_rev = job_storage.create_revision(
+        job_id, rev.narration_text, new_settings,
+        audio_path=rev.audio_path,
+        audio_duration=rev.audio_duration,
+        subtitles_srt=rev.subtitles_srt,
+    )
     await state.update_data(revision_id=new_rev.revision_id)
 
     await safe_edit_reply_markup(
@@ -280,7 +298,7 @@ async def cb_sub_pos(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("set_audio:"))
 async def cb_set_audio(call: CallbackQuery) -> None:
     _, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev_id_str)):
         return
 
     rev = job_storage.get_revision(job_id, int(rev_id_str))
@@ -298,7 +316,7 @@ async def cb_set_audio(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("aud_pick:"))
 async def cb_aud_pick(call: CallbackQuery, state: FSMContext) -> None:
     _, mode, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev_id_str)):
         return
 
     rev = job_storage.get_revision(job_id, int(rev_id_str))
@@ -308,7 +326,13 @@ async def cb_aud_pick(call: CallbackQuery, state: FSMContext) -> None:
 
     new_settings = VoiceSettings.from_dict(rev.settings.to_dict())
     new_settings.source_audio_mode = mode
-    new_rev = job_storage.create_revision(job_id, rev.narration_text, new_settings)
+    # Voice/speed/text unchanged -> reuse audio
+    new_rev = job_storage.create_revision(
+        job_id, rev.narration_text, new_settings,
+        audio_path=rev.audio_path,
+        audio_duration=rev.audio_duration,
+        subtitles_srt=rev.subtitles_srt,
+    )
     await state.update_data(revision_id=new_rev.revision_id)
 
     await safe_edit_reply_markup(
@@ -321,7 +345,7 @@ async def cb_aud_pick(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("set_format:"))
 async def cb_set_format(call: CallbackQuery) -> None:
     _, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev_id_str)):
         return
 
     rev = job_storage.get_revision(job_id, int(rev_id_str))
@@ -343,7 +367,7 @@ async def cb_set_format(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("fmt_rat:"))
 async def cb_fmt_rat(call: CallbackQuery, state: FSMContext) -> None:
     _, short_ratio, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev_id_str)):
         return
 
     rev = job_storage.get_revision(job_id, int(rev_id_str))
@@ -354,7 +378,13 @@ async def cb_fmt_rat(call: CallbackQuery, state: FSMContext) -> None:
     ratio = opt.RATIO_SHORT_TO_VAL.get(short_ratio, short_ratio)
     new_settings = VoiceSettings.from_dict(rev.settings.to_dict())
     new_settings.aspect_ratio = ratio
-    new_rev = job_storage.create_revision(job_id, rev.narration_text, new_settings)
+    # Voice/speed/text unchanged -> reuse audio
+    new_rev = job_storage.create_revision(
+        job_id, rev.narration_text, new_settings,
+        audio_path=rev.audio_path,
+        audio_duration=rev.audio_duration,
+        subtitles_srt=rev.subtitles_srt,
+    )
     await state.update_data(revision_id=new_rev.revision_id)
 
     await safe_edit_reply_markup(
@@ -370,7 +400,7 @@ async def cb_fmt_rat(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("fmt_frm:"))
 async def cb_fmt_frm(call: CallbackQuery, state: FSMContext) -> None:
     _, framing, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev_id_str)):
         return
 
     rev = job_storage.get_revision(job_id, int(rev_id_str))
@@ -380,7 +410,13 @@ async def cb_fmt_frm(call: CallbackQuery, state: FSMContext) -> None:
 
     new_settings = VoiceSettings.from_dict(rev.settings.to_dict())
     new_settings.framing_mode = framing
-    new_rev = job_storage.create_revision(job_id, rev.narration_text, new_settings)
+    # Voice/speed/text unchanged -> reuse audio
+    new_rev = job_storage.create_revision(
+        job_id, rev.narration_text, new_settings,
+        audio_path=rev.audio_path,
+        audio_duration=rev.audio_duration,
+        subtitles_srt=rev.subtitles_srt,
+    )
     await state.update_data(revision_id=new_rev.revision_id)
 
     await safe_edit_reply_markup(
@@ -397,7 +433,7 @@ async def cb_fmt_frm(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("set_save_def:"))
 async def cb_set_save_def(call: CallbackQuery) -> None:
     _, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev_id_str)):
         return
 
     rev = job_storage.get_revision(job_id, int(rev_id_str))
@@ -411,7 +447,7 @@ async def cb_set_save_def(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("set_rest_def:"))
 async def cb_set_rest_def(call: CallbackQuery, state: FSMContext) -> None:
     _, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev_id_str)):
         return
 
     rev = job_storage.get_revision(job_id, int(rev_id_str))
@@ -420,7 +456,19 @@ async def cb_set_rest_def(call: CallbackQuery, state: FSMContext) -> None:
         return
 
     default_settings = preferences_storage.restore_preferences(call.from_user.id)
-    new_rev = job_storage.create_revision(job_id, rev.narration_text, default_settings)
+    # Check if voice and speed are unchanged
+    audio_unchanged = (
+        default_settings.voice == rev.settings.voice
+        and default_settings.speed == rev.settings.speed
+    )
+    new_rev = job_storage.create_revision(
+        job_id,
+        rev.narration_text,
+        default_settings,
+        audio_path=rev.audio_path if audio_unchanged else None,
+        audio_duration=rev.audio_duration if audio_unchanged else 0.0,
+        subtitles_srt=rev.subtitles_srt if audio_unchanged else None,
+    )
     await state.update_data(revision_id=new_rev.revision_id)
 
     text = _render_settings_summary(new_rev)

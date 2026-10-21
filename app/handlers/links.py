@@ -19,6 +19,7 @@ from app.ui.keyboards import (
     source_choice_keyboard,
     link_download_keyboard,
     link_failure_keyboard,
+    job_in_progress_keyboard,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,8 @@ async def handle_url_input(message: Message, state: FSMContext) -> None:
             JobState.UPLOADING,
         ):
             await message.reply(
-                "⚠️ លោកអ្នកមានការងារមួយកំពុងដំណើរការ។ សូមរង់ចាំឱ្យការងារនោះចប់សិន ឬចុច Cancel មុននឹងផ្ញើ link ថ្មី។"
+                "⚠️ លោកអ្នកមានការងារមួយកំពុងដំណើរការ។ សូមរង់ចាំឱ្យការងារនោះចប់សិន ឬចុច Cancel មុននឹងផ្ញើ link ថ្មី។",
+                reply_markup=job_in_progress_keyboard(existing_job_id),
             )
             return
 
