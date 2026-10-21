@@ -1,0 +1,65 @@
+# Secrets & Environment Variables (ដាច់ខាតកុំ Push ឡើង GitHub)
+.env
+*.session
+*.session-journal
+
+# Temporary Render & Video Files (ឯកសារវីដេអូធំៗ)
+temp/
+cache/
+logs/
+*.mp4
+*.mp3
+*.wav
+*.avi
+*.mkv
+*.mov
+
+# AI Model weights & checkpoints
+models/
+
+# Python Cache & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Remotion & Node.js
+remotion/node_modules/
+remotion/build/
+remotion/.remotion/
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# IDE & OS Files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+desktop.ini
+"bot video/"
+*.jpg
+*.png

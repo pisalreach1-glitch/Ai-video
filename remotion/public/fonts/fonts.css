@@ -1,0 +1,21 @@
+@font-face {
+  font-family: 'Kantumruy Pro';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(https://fonts.gstatic.com/s/kantumruypro/v12/1q2TY5aECkp34vEBSPFOmJxwvk_pilU8OGNfyg2Jq0s0.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Koulen';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(https://fonts.gstatic.com/s/koulen/v30/AMOQz46as3KIBPeWgg.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Moul';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(https://fonts.gstatic.com/s/moul/v30/nuF2D__FSo_3E-Q.ttf) format('truetype');
+}
