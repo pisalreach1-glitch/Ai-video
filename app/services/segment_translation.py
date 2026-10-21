@@ -122,17 +122,32 @@ async def _translate_single_batch_gemini(
 
     def _call_gemini() -> tuple[str, Any]:
         client = genai.Client(api_key=api_key)
-        model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-        res = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                response_mime_type="application/json",
-                response_schema=BatchSchema,
-            )
-        )
-        return (res.text or "").strip(), getattr(res, "parsed", None)
+        preferred = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
+        candidate_models = [preferred, "gemini-3.5-flash", "gemini-2.5-flash", "gemini-flash-latest"]
+        seen = set()
+        models_to_try = [m for m in candidate_models if not (m in seen or seen.add(m))]
+
+        last_err = None
+        for model_name in models_to_try:
+            try:
+                res = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.2,
+                        response_mime_type="application/json",
+                        response_schema=BatchSchema,
+                    )
+                )
+                return (res.text or "").strip(), getattr(res, "parsed", None)
+            except Exception as e:
+                err_msg = str(e)
+                if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "503" in err_msg or "404" in err_msg:
+                    logger.warning(f"Model {model_name} failed ({type(e).__name__}). Trying next fallback model...")
+                    last_err = e
+                    continue
+                raise e
+        raise last_err or RuntimeError("All candidate Gemini models failed.")
 
     if cancel_check and cancel_check():
         raise RuntimeError("Translation cancelled before start.")
