@@ -88,6 +88,14 @@ async def _translate_single_batch_gemini(
 
     from google import genai
     from google.genai import types
+    from pydantic import BaseModel
+
+    class SegmentItem(BaseModel):
+        id: str
+        translated_text: str
+
+    class BatchSchema(BaseModel):
+        segments: list[SegmentItem]
 
     request_payload = {
         "target_language": "km",
@@ -106,16 +114,13 @@ async def _translate_single_batch_gemini(
         "You are an expert video translator specializing in natural, concise Khmer (ភាសាខ្មែរ) dubbing.\n"
         "Translate each of the following timed video utterances into natural, fluent Khmer.\n"
         "CRITICAL RULES:\n"
-        "1. You MUST return a valid JSON object matching the exact format:\n"
-        '   {"segments": [{"id": "s001", "translated_text": "..."}, ...]}\n'
-        "2. Keep EXACTLY the same segment IDs ('id'). Do not skip, merge, rename, or reorder any IDs.\n"
-        "3. Provide natural, concise Khmer phrasing that speaks smoothly within the time slot.\n"
-        "4. Preserve factual meaning, names, quantities, and steps accurately.\n"
-        "5. Output ONLY the raw JSON object, without any Markdown codeblocks or comments.\n\n"
+        "1. Keep EXACTLY the same segment IDs ('id'). Do not skip, merge, rename, or reorder any IDs.\n"
+        "2. Provide natural, concise Khmer phrasing that speaks smoothly within the time slot.\n"
+        "3. Preserve factual meaning, names, quantities, and steps accurately.\n\n"
         f"{json.dumps(request_payload, ensure_ascii=False, indent=2)}"
     )
 
-    def _call_gemini() -> str:
+    def _call_gemini() -> tuple[str, Any]:
         client = genai.Client(api_key=api_key)
         model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         res = client.models.generate_content(
@@ -124,26 +129,33 @@ async def _translate_single_batch_gemini(
             config=types.GenerateContentConfig(
                 temperature=0.2,
                 response_mime_type="application/json",
+                response_schema=BatchSchema,
             )
         )
-        return (res.text or "").strip()
+        return (res.text or "").strip(), getattr(res, "parsed", None)
 
     if cancel_check and cancel_check():
         raise RuntimeError("Translation cancelled before start.")
 
-    raw_json = await asyncio.to_thread(_call_gemini)
+    raw_json, parsed_obj = await asyncio.to_thread(_call_gemini)
 
     if cancel_check and cancel_check():
         raise RuntimeError("Translation cancelled.")
 
-    # Clean markdown if present
-    cleaned = re.sub(r"^```(?:json)?\s*", "", raw_json, flags=re.MULTILINE)
-    cleaned = re.sub(r"\s*```$", "", cleaned, flags=re.MULTILINE).strip()
+    if parsed_obj is not None:
+        try:
+            data = parsed_obj.model_dump()
+        except Exception:
+            data = {"segments": [{"id": item.id, "translated_text": item.translated_text} for item in getattr(parsed_obj, "segments", [])]}
+    else:
+        # Clean markdown if present
+        cleaned = re.sub(r"^```(?:json)?\s*", "", raw_json, flags=re.MULTILINE)
+        cleaned = re.sub(r"\s*```$", "", cleaned, flags=re.MULTILINE).strip()
 
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        raise TranslationValidationError(f"Failed to parse provider JSON: {e}\nRaw output: {raw_json[:300]}")
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError as e:
+            raise TranslationValidationError(f"Failed to parse provider JSON: {e}\nRaw output: {raw_json[:300]}")
 
     return validate_translation_response(segments, data, provider_name="gemini")
 
@@ -163,8 +175,23 @@ async def translate_segments_gemini(
     results: list[TranslatedSegment] = []
     for i in range(0, len(segments), BATCH_SIZE):
         batch = segments[i:i + BATCH_SIZE]
-        batch_res = await _translate_single_batch_gemini(batch, api_key, cancel_check=cancel_check)
-        results.extend(batch_res)
+        try:
+            batch_res = await _translate_single_batch_gemini(batch, api_key, cancel_check=cancel_check)
+            results.extend(batch_res)
+        except Exception as e:
+            logger.warning(f"Batch {i//BATCH_SIZE + 1} translation error: {e}. Retrying once...")
+            try:
+                batch_res = await _translate_single_batch_gemini(batch, api_key, cancel_check=cancel_check)
+                results.extend(batch_res)
+            except Exception as e2:
+                logger.error(f"Batch {i//BATCH_SIZE + 1} retry failed: {e2}. Marking batch as needs_review.")
+                for s in batch:
+                    results.append(TranslatedSegment(
+                        segment_id=s.segment_id,
+                        translated_text="",
+                        translation_provider="manual",
+                        status="needs_review",
+                    ))
 
     return results
 
