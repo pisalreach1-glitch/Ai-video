@@ -26,6 +26,11 @@ from errors import (
     ProcessTimeoutError,
     JobCancelledError
 )
+from remotion_sandbox import (
+    validate_composition_name,
+    validate_props_file,
+    get_sanitized_render_env
+)
 
 logger = logging.getLogger(__name__)
 
@@ -388,6 +393,10 @@ class RemotionProcessor:
             "visualOverlays": mapped_overlays
         }
 
+        # Validate props and composition before rendering
+        validate_composition_name("ShortComposition")
+        validate_props_file(props_data, allowed_roots=[Path(self.remotion_dir), Path(self.public_dir)])
+
         with open(props_path, "w", encoding="utf-8") as f:
             json.dump(props_data, f, ensure_ascii=False, indent=2)
 
@@ -416,12 +425,14 @@ class RemotionProcessor:
         render_timeout = timeout or DEFAULT_REMOTION_TIMEOUT
 
         try:
+            sanitized_env = get_sanitized_render_env()
             proc_out = ProcessRunner.run(
                 cmd,
                 cwd=self.remotion_dir,
                 timeout=render_timeout,
                 on_pid_assigned=on_pid_assigned,
                 cancel_event=cancel_event,
+                env=sanitized_env,
                 job_id=job_id
             )
 

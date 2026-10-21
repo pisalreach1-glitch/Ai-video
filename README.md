@@ -148,13 +148,54 @@ On startup:
 - Expired job folders, generated props, and previews older than the retention threshold are swept periodically every 30 minutes.
 - Path traversal guards prevent deletion outside designated temp/cache roots.
 
-### 5. Graceful Shutdown
+### 5. Graceful Shutdown & Restart Recovery
 To stop the bot cleanly:
 ```bash
 # Windows
 stop_bot.bat
 ```
-Gracefully disconnects MTProto session and Telegram polling.
+Gracefully shuts down the background worker pool, MTProto session, and Telegram polling.
+
+#### Restart Recovery:
+- On startup, `db.recover_interrupted_jobs()` automatically identifies any in-progress jobs that were interrupted by a system shutdown or reboot, and sets their status to `interrupted`.
+- Unfinished jobs are **never** labeled completed.
+
+---
+
+## 🧙‍♂️ 5-Step Video Wizard & Navigation
+
+The bot separates interactive wizard state from background rendering job state:
+
+1. **Step 1 (`mode`):** Choose between Auto, Quick Viral Pop, Motion Explainer, or Custom AI Agent.
+2. **Step 2 (`upload`):** Upload video up to 2GB via MTProto or Telegram Bot API.
+3. **Step 3 (`style`):** Select visual theme (TikTok Viral, Bold Gold, Clean White), custom font, and BGM track.
+4. **Step 4 (`length`):** Set target pacing: Auto (smart silence cut), Short (<30s), Medium (<60s), or Full.
+5. **Step 5 (`review`):** Comprehensive summary with optional custom instructions, and `[ 🚀 Confirm & Start Render ]`.
+
+### Non-Destructive Navigation:
+- **`[ ⬅️ Back ]`:** Moves back a step without losing uploaded media or chosen styles.
+- **`[ 🏠 Main Menu ]`:** Returns to main menu without silently cancelling active background jobs.
+- **`[ ⏯️ Resume ]`:** If an active or approval-pending job exists, `/start` and the main menu provide a one-click Resume button.
+
+---
+
+## 🛡️ Sandbox Security & Execution Isolation
+
+- **Secret Scrubbing:** Sensitive environment variables (`TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, `TELEGRAM_API_HASH`, etc.) are explicitly scrubbed from the subprocess environment before passing to Remotion CLI.
+- **Composition Whitelist:** Only approved compositions (`ShortComposition`, `PreviewComposition`) can be executed.
+- **Props Validation:** Guard against path traversal in `videoSrc` or overlay image paths.
+- **Zero Arbitrary Installs:** The rendering runtime does not automatically install unverified npm packages.
+- **Bounded Retries:** If Remotion rendering experiences an unexpected transient failure, it retries a bounded maximum of 2 times before failing cleanly.
+
+---
+
+## 🤖 Antigravity Agent Bridge & Assisted Fallback
+
+- The bot checks `ANTIGRAVITY_BRIDGE_ENABLED` (defaults to `false` without external cloud sidecars).
+- When custom agent features are requested without a live automated sidecar bridge, the bot honestly degrades to assisted mode:
+  - Generates structured pair-programming briefs (`agent_brief.md` and `agent_brief.json`).
+  - Sets job state to `awaiting_manual_agent`.
+  - Allows immediate one-click fallback to standard template rendering.
 
 ---
 
@@ -164,5 +205,5 @@ Gracefully disconnects MTProto session and Telegram polling.
    Speech-to-text is performed by AI and can make mistakes on background noise, fast colloquial slang, or indistinct accents. Users are strongly advised to review and edit subtitle lines before initiating rendering.
 2. **Estimated Render Time:**
    Rendering time depends on hardware capability (CPU cores, GPU NVENC support) and input video duration/resolution. Typical renders take from under a minute up to several minutes for longer 4K videos.
-3. **Queue Limits:**
-   To preserve system stability, the default configuration enforces `1` active job per user and a maximum server queue capacity of `10` jobs.
+3. **Queue Limits & Concurrency:**
+   To preserve local PC stability, default configuration enforces `MAX_RENDER_CONCURRENCY=1`, `1` active job per user, and a bounded queue size of `20` jobs in SQLite.

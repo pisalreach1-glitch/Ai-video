@@ -79,6 +79,20 @@ tempfile.tempdir = str(TEMP_DIR)
 job_queue_manager = JobQueueManager(TEMP_DIR)
 cleanup_manager = CleanupManager(TEMP_DIR, CACHE_DIR, retention_hours=DEFAULT_RETENTION_HOURS)
 
+# SQLite Persistence, Startup Recovery & Worker Pool
+from database import DatabaseManager, DbJob, WizardSession
+from worker import RenderWorkerPool, JobNotificationService
+from agent_bridge import AntigravityBridge
+from wizard_flow import build_wizard_view, navigate_wizard, update_wizard_field, create_job_from_wizard
+
+db = DatabaseManager(BASE_DIR / "bot_data.sqlite")
+recovered_count = db.recover_interrupted_jobs()
+if recovered_count > 0:
+    logger.warning(f"Startup recovery: marked {recovered_count} active jobs as 'interrupted'.")
+
+worker_notifier = None
+worker_pool = None
+
 import json
 FONTS_FILE = BASE_DIR / "khmer_fonts.json"
 ALL_FONTS = []
@@ -208,99 +222,408 @@ def process_edit_input(words: list, user_text: str):
     return words, changes
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """សារស្វាគមន៍ /start"""
+    """សារស្វាគមន៍ /start និងផ្ទាំងបញ្ជាគោល (Main Menu)"""
+    user_id = update.effective_user.id if update.effective_user else update.effective_chat.id
+    chat_id = update.effective_chat.id
+
+    # Check for any existing resumable work
+    resumable_job = db.get_resumable_job_for_user(user_id)
+
+    buttons = []
+    if resumable_job:
+        short_id = resumable_job.job_id[:8]
+        buttons.append([InlineKeyboardButton(f"⏯️ បន្តការងារដែលមានស្រាប់ [Job {short_id}]", callback_data=f"act_resume:{resumable_job.job_id}")])
+
+    buttons.extend([
+        [InlineKeyboardButton("🧙‍♂️ បង្កើតវីដេអូថ្មីតាម Wizard (Video Wizard)", callback_data="wiz_start")],
+        [InlineKeyboardButton("⚡ Quick Viral Pop ផ្ទាល់", callback_data="action_render_quick")],
+        [InlineKeyboardButton("📊 ស្ថានភាពការងារ (Job Status)", callback_data="act_status")]
+    ])
+
+    if resumable_job and resumable_job.is_active():
+        buttons.append([InlineKeyboardButton("🛑 បោះបង់ការងារសកម្ម (Cancel Active Job)", callback_data=f"act_cancel:{resumable_job.job_id}")])
+
+    reply_markup = InlineKeyboardMarkup(buttons)
+
     welcome_text = (
         "👋 **ជំរាបសួរ! ខ្ញុំជា AI Video Auto-Cut & Subtitle Bot** 🎬\n\n"
         "⚡ **លក្ខណៈពិសេសចម្បង៖**\n"
-        "• **របៀប ១ (Quick Viral Pop)៖** Word-by-Word Highlighting + Smart Cut + Auto SFX + BGM\n"
-        "• **របៀប ២ (Motion Explainer)៖** Sticker Highlights, Split-Screen & Real B-Roll Cutaways\n"
-        "• ពិនិត្យ និងកែសម្រួល Subtitle ដោយផ្ទាល់មុនពេល Render\n"
-        "• ទាញយកឯកសារ Subtitle (.SRT) ផ្លូវការ\n\n"
+        "• **🧙‍♂️ 5-Step Video Wizard៖** Mode ➔ Upload ➔ Style ➔ Length ➔ Review\n"
+        "• **⚡ Quick Viral Pop៖** Word-by-Word Highlighting + Smart Cut + Auto SFX + BGM\n"
+        "• **📊 Motion Explainer៖** Sticker Highlights, Split-Screen & Real B-Roll Overlays\n"
+        "• ពិនិត្យ និងកែសម្រួល Subtitle ដោយផ្ទាល់មុនពេល Render (Preview & Revision Approval)\n"
+        "• ការពារដំណើរការលើ Local PC និងរក្សាទុកទិន្នន័យដោយសុវត្ថិភាពក្នុង SQLite\n\n"
         "📌 **ចំណាំសំខាន់ (Honest Notice)៖**\n"
-        "• អក្សររៀបចំដោយ AI; សូមពិនិត្យផ្ទៀងផ្ទាត់មុនពេល Render (AI-generated subtitles; review before rendering)\n"
-        "• ពេលវេលា Render អាស្រ័យលើប្រវែងវីដេអូ និងល្បឿនម៉ាស៊ីន (Estimated render time depends on video and hardware)\n\n"
-        "🛠️ **ពាក្យបញ្ជា (Commands)៖**\n"
-        "• `/status` - ពិនិត្យមើលស្ថានភាពការងារ និងជួររង់ចាំ (Queue Status)\n"
-        "• `/cancel` - បញ្ឈប់ និងបោះបង់ការងារដែលកំពុងដំណើរការ (Stop & Cancel Process)\n"
-        "• `/new` - ចាប់ផ្តើមវគ្គថ្មី (Reset Session)\n"
-        "• `/help` - មើលការណែនាំបន្ថែម\n\n"
-        "📦 **ការគាំទ្រវីដេអូទំហំធំ (MTProto Requirements)៖**\n"
-        "Telegram Bot API កម្រិតទំហំឯកសារត្រឹម 20MB/50MB។ ដើម្បីផ្ញើ និងទាញយកវីដេអូធំរហូតដល់ **2,000MB (2 GB)** សូមប្រាកដថាបានកំណត់ `TELEGRAM_API_ID` និង `TELEGRAM_API_HASH` ក្នុង `.env` (ទាញយកពី https://my.telegram.org)។\n\n"
-        "👉 *សូមផ្ញើវីដេអូមកទីនេះដើម្បីចាប់ផ្តើម!*"
+        "• អក្សររៀបចំដោយ AI; សូមពិនិត្យផ្ទៀងផ្ទាត់មុនពេល Render\n"
+        "• ពេលវេលា Render អាស្រ័យលើប្រវែងវីដេអូ និងល្បឿនម៉ាស៊ីន PC\n\n"
+        "👉 *សូមចុចជ្រើសរើសជម្រើសខាងក្រោម ឬផ្ញើវីដេអូមកទីនេះដើម្បីចាប់ផ្តើម!*"
     )
-    await update.message.reply_text(welcome_text, parse_mode="Markdown")
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode="Markdown")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ពិនិត្យស្ថានភាព Job និង Queue របស់ User (Non-blocking)"""
+    """ពិនិត្យស្ថានភាព Job ពី SQLite (Non-blocking)"""
     user_id = update.effective_user.id if update.effective_user else update.effective_chat.id
-    summary = job_queue_manager.get_status_summary(user_id)
-    job: Optional[Job] = summary["user_job"]
+    latest_job = db.get_latest_job_for_user(user_id)
+    stats = db.get_queue_stats()
 
-    if not job:
+    if not latest_job:
         status_text = (
             "ℹ️ **ស្ថានភាពប្រព័ន្ធបច្ចុប្បន្ន (System Status)៖**\n\n"
-            "លោកអ្នកមិនមានការងារណាមួយកំពុងដំណើរការឡើយ។\n\n"
-            f"📊 **ស្ថានភាពម៉ាស៊ីនបម្រើការ៖**\n"
-            f"• ការងារកំពុងដំណើរការ (Running)៖ `{summary['total_running']} / {summary['max_concurrent']}`\n"
-            f"• ការងារក្នុងជួររង់ចាំ (Queued)៖ `{summary['total_queued']}`\n"
-            f"• គោលការណ៍រក្សាទុកទិន្នន័យ (Retention)៖ `{int(cleanup_manager.retention_seconds // 3600)} ម៉ោង`\n\n"
-            "👉 សូមផ្ញើវីដេអូមកដើម្បីចាប់ផ្តើម!"
+            "លោកអ្នកមិនទាន់មានប្រវត្តិការងារណាមួយឡើយ។\n\n"
+            f"📊 **ស្ថានភាពជួរ Render (Local PC Queue)៖**\n"
+            f"• ការងារកំពុងដំណើរការ (Running)៖ `{stats['running']} / 1`\n"
+            f"• ការងារក្នុងជួររង់ចាំ (Queued)៖ `{stats['queued']}`\n"
+            f"• ការងាររង់ចាំការពិនិត្យ (Awaiting Approval)៖ `{stats['awaiting_approval']}`\n"
+            f"• ការងារសរុបក្នុង SQLite៖ `{stats['total']}`\n\n"
+            "👉 ប្រើ `/start` ឬផ្ញើវីដេអូមកដើម្បីចាប់ផ្តើម!"
         )
-    else:
-        dur = job.duration_seconds()
-        status_emojis = {
-            "queued": "⏳ កំពុងរង់ចាំក្នុងជួរ (Queued)",
-            "running": "⚙️ កំពុងដំណើរការ (Running)",
-            "completed": "✅ រួចរាល់ (Completed)",
-            "failed": "❌ ជួបបញ្ហា (Failed)",
-            "cancelled": "🛑 ត្រូវបានបោះបង់ (Cancelled)"
-        }
-        st_label = status_emojis.get(job.status, job.status)
-        pos_text = f"\n• លេខរៀងក្នុងជួរ៖ `#{summary['user_queue_position']}`" if summary['user_queue_position'] > 0 else ""
+        await update.message.reply_text(status_text, parse_mode="Markdown")
+        return
 
-        status_text = (
-            f"📋 **ស្ថានភាពការងាររបស់អ្នក (Job Status)៖**\n\n"
-            f"• **Job ID:** `{job.job_id}`\n"
-            f"• **ស្ថានភាព:** {st_label}{pos_text}\n"
-            f"• **ប្រភេទ (Mode):** `{job.mode}`\n"
-            f"• **រយៈពេលដំណើរការ:** `{dur} វិនាទី`\n"
-            f"• **ការងារសរុបក្នុងប្រព័ន្ធ:** `{summary['total_running']} running, {summary['total_queued']} queued`\n\n"
-        )
-        if job.status == "running":
-            status_text += "💡 លោកអ្នកអាចប្រើពាក្យបញ្ជា `/cancel` ដើម្បីបញ្ឈប់ការងារនេះភ្លាមៗ។"
-        elif job.status == "queued":
-            status_text += "💡 ការងាររបស់អ្នកនឹងចាប់ផ្តើមដំណើរការដោយស្វ័យប្រវត្តិតាមលំដាប់លំដោយ។"
-        else:
-            status_text += "👉 ប្រើពាក្យបញ្ជា `/new` ឬផ្ញើវីដេអូថ្មីដើម្បីចាប់ផ្តើមម្តងទៀត។"
+    short_id = latest_job.job_id[:8]
+    status_emojis = {
+        "queued": "⏳ កំពុងរង់ចាំក្នុងជួរ (Queued)",
+        "analyzing": "🔍 កំពុងពិនិត្យ Media & Audio (Analyzing)",
+        "planning": "🎙️ AI កំពុងស្ដាប់សំឡេង (Planning)",
+        "generating": "✂️ កំពុងកាត់ត Smart Cuts (Generating)",
+        "validating": "🛡️ ត្រួតពិនិត្យសុវត្ថិភាព Props (Validating)",
+        "preview_rendering": "📋 កំពុងរៀបចំ Preview",
+        "awaiting_approval": "⏳ រង់ចាំការយល់ព្រមពីលោកអ្នក (Awaiting Approval)",
+        "final_rendering": "⚡ កំពុង Render Remotion ពេញលេញ",
+        "uploading": "📤 កំពុងផ្ញើត្រឡប់ទៅវិញ (Uploading)",
+        "completed": "✅ រួចរាល់ពេញលេញ (Completed)",
+        "awaiting_manual_agent": "🤖 រង់ចាំជំនួយការ AI ឯកទេស (Awaiting Manual Agent)",
+        "failed": "❌ ជួបបញ្ហា (Failed)",
+        "cancelled": "🛑 ត្រូវបានបោះបង់ (Cancelled)",
+        "interrupted": "⚠️ ត្រូវបានរំខានដោយសារម៉ាស៊ីន Restart (Interrupted)"
+    }
+    st_label = status_emojis.get(latest_job.status, latest_job.status)
 
-    await update.message.reply_text(status_text, parse_mode="Markdown")
+    status_text = (
+        f"📋 **ស្ថានភាពការងាររបស់អ្នក (Job Status)៖**\n\n"
+        f"• **Job ID:** `{short_id}` (Rev {latest_job.revision_id})\n"
+        f"• **ស្ថានភាព (Status):** {st_label}\n"
+        f"• **ប្រភេទ (Mode):** `{latest_job.mode}`\n"
+        f"• **វឌ្ឍនភាព (Progress):** `{int(latest_job.step_progress * 100)}%`\n"
+    )
+
+    if latest_job.error_reason:
+        status_text += f"• **ព័ត៌មានបន្ថែម:** `{latest_job.error_reason}`\n"
+
+    status_text += (
+        f"\n📊 **ស្ថិតិម៉ាស៊ីន Render Local PC៖**\n"
+        f"• Running: `{stats['running']} / 1` | Queued: `{stats['queued']}`\n\n"
+    )
+
+    buttons = []
+    if latest_job.status in ("awaiting_approval", "awaiting_manual_agent"):
+        buttons.append([InlineKeyboardButton("🚀 យល់ព្រម Render ឥឡូវនេះ", callback_data=f"appr:{latest_job.job_id}:{latest_job.revision_id}")])
+    if latest_job.is_active():
+        buttons.append([InlineKeyboardButton("🛑 បោះបង់ការងារ (Cancel Job)", callback_data=f"act_cancel:{latest_job.job_id}")])
+    buttons.append([InlineKeyboardButton("🧙‍♂️ បង្កើតវីដេអូថ្មី (New Wizard)", callback_data="wiz_start")])
+
+    await update.message.reply_text(status_text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """បោះបង់ការងារសកម្មភ្លាមៗ និងបញ្ឈប់ process tree"""
     user_id = update.effective_user.id if update.effective_user else update.effective_chat.id
-    cancelled_job = job_queue_manager.cancel_job(user_id)
-    if cancelled_job:
+    active_job = db.get_active_job_for_user(user_id) or db.get_resumable_job_for_user(user_id)
+
+    if active_job and worker_pool:
+        worker_pool.cancel_job(active_job.job_id)
         await update.message.reply_text(
-            f"🛑 **[Job {cancelled_job.job_id}] ការងារត្រូវបានបោះបង់ដោយជោគជ័យ!**\n\n"
-            "ដំណើរការ Render និង subprocess ទាំងអស់ត្រូវបានបញ្ឈប់ភ្លាមៗ។ "
-            "លោកអ្នកអាចផ្ញើវីដេអូថ្មី ឬប្រើ `/new` ដើម្បីចាប់ផ្តើមម្តងទៀត។",
+            f"🛑 **[Job {active_job.job_id[:8]}] ការងារត្រូវបានបោះបង់ដោយជោគជ័យ!**\n\n"
+            "ដំណើរការ Render និង subprocess tree ទាំងអស់ត្រូវបានបញ្ឈប់ភ្លាមៗ។ "
+            "លោកអ្នកអាចប្រើ `/new` ឬ `/start` ដើម្បីចាប់ផ្តើមម្តងទៀត។",
             parse_mode="Markdown"
         )
     else:
-        await update.message.reply_text(
-            "ℹ️ មិនមានការងារដែលកំពុងដំណើរការ ឬស្ថិតក្នុងជួររង់ចាំសម្រាប់បោះបង់ឡើយ។",
+        # Also clean up memory job manager for backwards compatibility
+        cancelled_mem = job_queue_manager.cancel_job(user_id)
+        if cancelled_mem:
+            await update.message.reply_text(
+                f"🛑 **[Job {cancelled_mem.job_id[:8]}] ការងារត្រូវបានបោះបង់ដោយជោគជ័យ!**",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(
+                "ℹ️ មិនមានការងារដែលកំពុងដំណើរការ ឬស្ថិតក្នុងជួររង់ចាំសម្រាប់បោះបង់ឡើយ។",
+                parse_mode="Markdown"
+            )
+
+async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ចាប់ផ្តើម Session ថ្មី និងសម្អាត Wizard state"""
+    user_id = update.effective_user.id if update.effective_user else update.effective_chat.id
+    chat_id = update.effective_chat.id
+
+    db.reset_wizard(user_id, chat_id)
+    job_queue_manager.reset_user_session(user_id)
+    context.user_data.clear()
+
+    session = db.get_or_create_wizard(user_id, chat_id)
+    text, markup = build_wizard_view(session)
+    await update.message.reply_text(
+        "✨ **បានចាប់ផ្តើមវគ្គថ្មី (Session Reset) រួចរាល់!**\n\n" + text,
+        reply_markup=markup,
+        parse_mode="Markdown"
+    )
+
+async def handle_wizard_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """គ្រប់គ្រងប៊ូតុង Wizard ទាំង ៥ ជំហាន (mode -> upload -> style -> length -> review)"""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    user_id = query.from_user.id
+    chat_id = query.message.chat_id
+
+    session = db.get_or_create_wizard(user_id, chat_id)
+
+    if data == "wiz_start":
+        session = db.reset_wizard(user_id, chat_id)
+        text, markup = build_wizard_view(session)
+        await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+        return
+
+    if data.startswith("wiz_nav:"):
+        direction = data.split(":", 1)[1]
+        if direction == "menu":
+            # Return to main menu without cancelling active work
+            resumable_job = db.get_resumable_job_for_user(user_id)
+            buttons = []
+            if resumable_job:
+                buttons.append([InlineKeyboardButton(f"⏯️ បន្តការងារដែលមានស្រាប់ [Job {resumable_job.job_id[:8]}]", callback_data=f"act_resume:{resumable_job.job_id}")])
+            buttons.extend([
+                [InlineKeyboardButton("🧙‍♂️ បន្ត Video Wizard", callback_data="wiz_nav:current")],
+                [InlineKeyboardButton("⚡ Quick Viral Pop ផ្ទាល់", callback_data="action_render_quick")],
+                [InlineKeyboardButton("📊 ស្ថានភាពការងារ (Job Status)", callback_data="act_status")]
+            ])
+            await query.edit_message_text(
+                "🏠 **ផ្ទាំងបញ្ជាគោល (Main Menu)៖**\n\nការងាររបស់អ្នកនៅតែរក្សាដដែល។ សូមជ្រើសរើសជម្រើសខាងក្រោម៖",
+                reply_markup=InlineKeyboardMarkup(buttons),
+                parse_mode="Markdown"
+            )
+            return
+
+        if direction == "current":
+            text, markup = build_wizard_view(session)
+            await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+            return
+
+        session = navigate_wizard(db, user_id, chat_id, direction)
+        text, markup = build_wizard_view(session)
+        await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+        return
+
+    if data.startswith("wiz_set:"):
+        _, field, value = data.split(":", 2)
+        session = update_wizard_field(db, user_id, chat_id, field, value)
+        text, markup = build_wizard_view(session)
+        await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+        return
+
+    if data == "wiz_font_menu":
+        buttons = [
+            [InlineKeyboardButton("លំនាំដើម (Kdam Thmor Pro)", callback_data="wiz_set:font:default")],
+            [InlineKeyboardButton("Battambang", callback_data="wiz_set:font:Battambang")],
+            [InlineKeyboardButton("Bayon", callback_data="wiz_set:font:Bayon")],
+            [InlineKeyboardButton("Bokor", callback_data="wiz_set:font:Bokor")],
+            [InlineKeyboardButton("Moul", callback_data="wiz_set:font:Moul")],
+            [InlineKeyboardButton("Siemreap", callback_data="wiz_set:font:Siemreap")],
+            [InlineKeyboardButton("⬅️ ត្រឡប់ក្រោយទៅ Style", callback_data="wiz_nav:style")]
+        ]
+        await query.edit_message_text(
+            "🔤 **ជ្រើសរើស Font អក្សរខ្មែរសម្រាប់វីដេអូ៖**",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="Markdown"
+        )
+        return
+
+    if data == "wiz_confirm_start":
+        # Check active job limit for user (max 1 active job per user)
+        active_job = db.get_active_job_for_user(user_id)
+        if active_job:
+            await query.answer("⚠️ លោកអ្នកមានការងារមួយកំពុងដំណើរការរួចហើយ! សូមរង់ចាំឱ្យរួចរាល់ ឬចុច Cancel។", show_alert=True)
+            return
+
+        if not session.input_path or not os.path.exists(session.input_path):
+            await query.answer("⚠️ សូម Upload វីដេអូជាមុន!", show_alert=True)
+            session = db.update_wizard(user_id, current_step="upload")
+            text, markup = build_wizard_view(session)
+            await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+            return
+
+        # Bound queue capacity check
+        stats = db.get_queue_stats()
+        if stats["queued"] >= 20:
+            await query.answer("⚠️ ជួរ Render ពេញហើយ (Queue Full)! សូមព្យាយាមម្ដងទៀតនៅបន្តិចក្រោយ។", show_alert=True)
+            return
+
+        job = create_job_from_wizard(db, session, TEMP_DIR)
+        short_id = job.job_id[:8]
+
+        if worker_pool:
+            worker_pool.notify_new_job()
+
+        confirm_msg = (
+            f"🚀 **[Job {short_id}] ការងារត្រូវបានបញ្ចូលទៅក្នុងជួរដោយជោគជ័យ!**\n\n"
+            f"• **ប្រភេទ (Mode)៖** `{job.mode}`\n"
+            f"• **ស្ថានភាព៖** `queued` ⏳\n"
+            f"• **ប្រព័ន្ធដំណើរការ៖** Background Worker Pool (Local PC Concurrency = 1)\n\n"
+            f"🔔 ប្រព័ន្ធនឹងផ្ញើសារជូនដំណឹងនៅរាល់ដំណាក់កាល។ លោកអ្នកអាចប្រើ `/status` ឬ `/cancel` បានគ្រប់ពេល!"
+        )
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📊 ពិនិត្យស្ថានភាព (Status)", callback_data="act_status")],
+            [InlineKeyboardButton("🛑 បោះបង់ (Cancel)", callback_data=f"act_cancel:{job.job_id}")]
+        ])
+        await query.edit_message_text(confirm_msg, reply_markup=kb, parse_mode="Markdown")
+        return
+
+async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """គ្រប់គ្រងការយល់ព្រម Render (Approve Callback) ជាមួយ revision check និង duplicate click prevention"""
+    query = update.callback_query
+    data = query.data  # appr:{job_id}:{revision_id}
+    user_id = query.from_user.id
+    parts = data.split(":")
+    if len(parts) != 3:
+        await query.answer("⚠️ ទម្រង់មិនត្រឹមត្រូវ!", show_alert=True)
+        return
+
+    job_id = parts[1]
+    rev_id = int(parts[2])
+
+    job = db.get_job(job_id)
+    if not job:
+        await query.answer("⚠️ រកមិនឃើញការងារនេះទេ!", show_alert=True)
+        return
+
+    if job.user_id != user_id:
+        await query.answer("⚠️ អ្នកមិនមែនជាម្ចាស់នៃការងារនេះទេ (Unauthorized)!", show_alert=True)
+        return
+
+    if job.revision_id != rev_id:
+        await query.answer(f"⚠️ កំណែនេះហួសសម័យហើយ! (បច្ចុប្បន្ន Revision {job.revision_id})", show_alert=True)
+        return
+
+    if job.status not in ("awaiting_approval", "awaiting_manual_agent"):
+        await query.answer("⚠️ ការងារនេះកំពុងដំណើរការ ឬត្រូវបានអនុម័តរួចហើយ!", show_alert=True)
+        return
+
+    # Immediate atomic lock to prevent duplicate clicks
+    db.update_job_status(job_id, "final_rendering", note="Approved by user callback")
+    await query.answer("🚀 បានទទួលការអនុម័ត! កំពុងចាប់ផ្តើម Render វីដេអូពេញលេញ...")
+
+    if worker_pool:
+        asyncio.create_task(worker_pool.execute_final_render(job_id, rev_id))
+
+async def handle_revision_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """គ្រប់គ្រងការ Bump Revision (Edit Subtitles, Change Style) មុន Render ពេញលេញ"""
+    query = update.callback_query
+    data = query.data
+    user_id = query.from_user.id
+    parts = data.split(":")
+    action = parts[0]
+    job_id = parts[1]
+    rev_id = int(parts[2])
+
+    job = db.get_job(job_id)
+    if not job or job.user_id != user_id:
+        await query.answer("⚠️ មិនមានសិទ្ធិកែប្រែឡើយ!", show_alert=True)
+        return
+
+    if action == "rev_edit":
+        new_job = db.bump_revision(job_id)
+        context.user_data["editing_job_id"] = job_id
+        context.user_data["awaiting_edited_text"] = True
+        await query.answer()
+
+        words = job.params.get("words", []) if job.params else []
+        formatted_lines = []
+        for i, w in enumerate(words[:15]):
+            formatted_lines.append(f"{i+1}. [{format_time_display(w.get('start', 0))} ➔ {format_time_display(w.get('end', 0))}] {w.get('word', '')}")
+
+        preview_txt = "\n".join(formatted_lines)
+        if len(words) > 15:
+            preview_txt += f"\n... និង {len(words)-15} ឃ្លាផ្សេងទៀត។"
+
+        msg = (
+            f"✏️ **[Job {job_id[:8]} - Revision {new_job.revision_id}] កែប្រែ Subtitle៖**\n\n"
+            f"សូមផ្ញើអត្ថបទកែប្រែមកទីនេះតាមទម្រង់ខាងក្រោម៖\n"
+            f"• `ពាក្យខុស -> ពាក្យត្រូវ` (ឧ. `កាហ្វេ -> តែបៃតង`)\n"
+            f"• ឬ `លេខជួរ = ពាក្យថ្មី` (ឧ. `2 = សួស្តីអ្នកទាំងអស់គ្នា`)\n\n"
+            f"📝 **ឃ្លាបច្ចុប្បន្នមួយចំនួន៖**\n{preview_txt}"
+        )
+        await query.message.reply_text(msg, parse_mode="Markdown")
+
+    elif action == "rev_style":
+        new_job = db.bump_revision(job_id)
+        await query.answer()
+        buttons = [
+            [InlineKeyboardButton("🔥 TikTok Viral Gold", callback_data=f"set_rev_theme:{job_id}:tiktok_viral")],
+            [InlineKeyboardButton("🟡 Bold Gold", callback_data=f"set_rev_theme:{job_id}:bold_yellow")],
+            [InlineKeyboardButton("⚪ Clean White", callback_data=f"set_rev_theme:{job_id}:minimal_clean")],
+            [InlineKeyboardButton("⬅️ ថយក្រោយ", callback_data=f"act_resume:{job_id}")]
+        ]
+        await query.edit_message_text(
+            f"🎨 **[Job {job_id[:8]} - Revision {new_job.revision_id}] ជ្រើសរើស Style ថ្មី៖**",
+            reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode="Markdown"
         )
 
-async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ចាប់ផ្តើម Session ថ្មី និងសម្អាត state"""
-    user_id = update.effective_user.id if update.effective_user else update.effective_chat.id
-    cancelled = job_queue_manager.reset_user_session(user_id)
-    context.user_data.clear()
-    msg = "✨ **បានចាប់ផ្តើមវគ្គថ្មី (Session Reset) រួចរាល់!**\n\nសូមផ្ញើវីដេអូថ្មីមកកាន់ខ្ញុំដើម្បីកាត់ត និងដាក់ Subtitle 🎬"
-    if cancelled:
-        msg = f"🛑 ការងារចាស់ `[Job {cancelled.job_id}]` ត្រូវបានបោះបង់។\n\n" + msg
-    await update.message.reply_text(msg, parse_mode="Markdown")
+async def handle_action_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """គ្រប់គ្រងប៊ូតុង Actions (act_status, act_cancel, act_resume)"""
+    query = update.callback_query
+    data = query.data
+    user_id = query.from_user.id
+
+    if data == "act_status":
+        await query.answer()
+        await status_command(update, context)
+        return
+
+    if data.startswith("act_cancel:"):
+        job_id = data.split(":", 1)[1]
+        job = db.get_job(job_id)
+        if not job or job.user_id != user_id:
+            await query.answer("⚠️ មិនមានសិទ្ធិបោះបង់ការងារនេះទេ!", show_alert=True)
+            return
+        if worker_pool:
+            worker_pool.cancel_job(job_id)
+        await query.answer("🛑 បានបោះបង់ការងារជោគជ័យ!")
+        await query.edit_message_text(f"🛑 **[Job {job_id[:8]}] ការងារត្រូវបានបោះបង់ដោយជោគជ័យ។**", parse_mode="Markdown")
+        return
+
+    if data.startswith("act_resume:"):
+        job_id = data.split(":", 1)[1]
+        job = db.get_job(job_id)
+        if not job or job.user_id != user_id:
+            await query.answer("⚠️ មិនអាចបន្តការងារនេះបានទេ!", show_alert=True)
+            return
+        await query.answer()
+        short_id = job_id[:8]
+
+        if job.status in ("awaiting_approval", "awaiting_manual_agent"):
+            rev_id = job.revision_id
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚀 យល់ព្រម Render វីដេអូពេញលេញ (Approve)", callback_data=f"appr:{job_id}:{rev_id}")],
+                [
+                    InlineKeyboardButton("✏️ កែ Subtitle", callback_data=f"rev_edit:{job_id}:{rev_id}"),
+                    InlineKeyboardButton("🎨 ប្ដូរ Style", callback_data=f"rev_style:{job_id}:{rev_id}")
+                ],
+                [InlineKeyboardButton("🛑 បោះបង់ (Cancel)", callback_data=f"act_cancel:{job_id}")]
+            ])
+            words = job.params.get("words", []) if job.params else []
+            txt = (
+                f"📋 **[Job {short_id} - Rev {rev_id}] រៀបចំរួចរាល់សម្រាប់ពិនិត្យ (Review)៖**\n\n"
+                f"• ប្រភេទ (Mode)៖ `{job.mode}`\n"
+                f"• រយៈពេលសរុប៖ `{job.params.get('duration', 0.0) if job.params else 0.0:.1f}s`\n"
+                f"• ចំនួនឃ្លា Subtitles៖ `{len(words)} ឃ្លា`\n"
+                f"• Theme៖ `{job.params.get('theme', 'tiktok_viral') if job.params else 'tiktok_viral'}`\n\n"
+                "👉 សូមចុច **[ 🚀 យល់ព្រម Render វីដេអូពេញលេញ ]** ដើម្បី Render!"
+            )
+            await query.edit_message_text(txt, reply_markup=kb, parse_mode="Markdown")
+        else:
+            await status_command(update, context)
+            return
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """សារជំនួយ /help"""
@@ -448,6 +771,10 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ត្រួតពិនិត្យភាពត្រឹមត្រូវនៃ Media និង Audio Stream
         try:
             validate_video_with_audio(input_path)
+            # Update SQLite wizard session with uploaded media
+            orig_name = getattr(video_obj, "file_name", None) or f"video_{msg_id}.mp4"
+            session = db.get_or_create_wizard(user_id, chat_id)
+            db.update_wizard(user_id, input_path=input_path, original_filename=orig_name)
         except BotProcessingError as m_err:
             if 'job' in locals() and job:
                 job.status = "failed"
@@ -541,6 +868,9 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [
                 InlineKeyboardButton("📥 ទាញយកឯកសារ Subtitle (.SRT)", callback_data="action_download_srt"),
                 InlineKeyboardButton("🎨 ប្ដូរ Font ឬភ្លេង (ជម្រើសបន្ថែម)", callback_data="action_customize")
+            ],
+            [
+                InlineKeyboardButton("🧙‍♂️ បើកក្នុង Video Wizard (5-Step Custom)", callback_data="wiz_nav:current")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -632,9 +962,46 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data["editing_story_scene_idx"] = None
         return
 
-    if not context.user_data.get("awaiting_edited_text") or not context.user_data.get("words"):
+    # 3. ពិនិត្យមើល Revision Job Editing (Subtitles)
+    editing_job_id = context.user_data.get("editing_job_id")
+    if editing_job_id:
+        job = db.get_job(editing_job_id)
+        if job and job.params and job.params.get("words"):
+            job_words = job.params["words"]
+            job_words, changes = process_edit_input(job_words, text)
+            if changes:
+                job.params["words"] = job_words
+                updated_job = db.bump_revision(editing_job_id, new_params=job.params)
+                db.update_job_status(editing_job_id, "awaiting_approval")
+                context.user_data.pop("editing_job_id", None)
+                changes_summary = "\n".join([f"• {c}" for c in changes])
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🚀 យល់ព្រម Render វីដេអូពេញលេញ (Approve)", callback_data=f"appr:{editing_job_id}:{updated_job.revision_id}")],
+                    [InlineKeyboardButton("✏️ កែប្រែបន្ថែមទៀត", callback_data=f"rev_edit:{editing_job_id}:{updated_job.revision_id}")],
+                    [InlineKeyboardButton("🛑 បោះបង់ (Cancel)", callback_data=f"act_cancel:{editing_job_id}")]
+                ])
+                await update.message.reply_text(
+                    f"✅ **[Job {editing_job_id[:8]} - Revision {updated_job.revision_id}] បានកែសម្រួលដោយជោគជ័យ!**\n\n"
+                    f"{changes_summary}\n\n"
+                    "👉 សូមចុច **[ 🚀 យល់ព្រម Render វីដេអូពេញលេញ ]** ដើម្បី Render ជាមួយ Revision ថ្មីនេះ!",
+                    reply_markup=kb,
+                    parse_mode="Markdown"
+                )
+                return
+
+    user_id = update.effective_user.id if update.effective_user else update.effective_chat.id
+    chat_id = update.effective_chat.id
+
+    # 4. ពិនិត្យមើល Wizard Session (Optional Custom Instructions)
+    if not context.user_data.get("awaiting_edited_text") and not context.user_data.get("words"):
+        session = db.get_or_create_wizard(user_id, chat_id)
+        session = update_wizard_field(db, user_id, chat_id, "prompt", text.strip())
+        if session.current_step != "review":
+            session = db.update_wizard(user_id, current_step="review")
+        w_text, w_markup = build_wizard_view(session)
         await update.message.reply_text(
-            "👋 **ជំរាបសួរ!** សូមផ្ញើជា **File វីដេអូ** មកកាន់ខ្ញុំ ដើម្បីចាប់ផ្ដើមកាត់ត និងដាក់ Subtitle ស្អាតៗ! 🎬",
+            f"✍️ **បានកត់ត្រាការណែនាំពិសេស (Custom Instructions)៖**\n> «{text.strip()}»\n\n{w_text}",
+            reply_markup=w_markup,
             parse_mode="Markdown"
         )
         return
@@ -1926,13 +2293,25 @@ def main():
                 logger.warning(f"Error in periodic cleanup task: {e}")
 
     async def post_init(application):
+        global worker_pool, worker_notifier
         if TELEGRAM_API_ID and TELEGRAM_API_HASH:
             await get_pyro_client()
+        # Launch background worker pool (concurrency=1 on local PC)
+        worker_notifier = JobNotificationService(bot_app=application, get_pyro_func=get_pyro_client)
+        worker_pool = RenderWorkerPool(
+            db=db,
+            remotion_processor=get_remotion_processor(),
+            notifier=worker_notifier,
+            max_concurrency=int(os.getenv("MAX_RENDER_CONCURRENCY", "1"))
+        )
+        worker_pool.start()
         # Launch non-blocking background cleanup task
         asyncio.create_task(periodic_cleanup_task())
 
     async def post_shutdown(application):
-        global pyro_client
+        global pyro_client, worker_pool
+        if worker_pool:
+            await worker_pool.stop()
         if pyro_client and pyro_client.is_connected:
             await pyro_client.stop()
 
@@ -1951,6 +2330,10 @@ def main():
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("cancel", cancel_command))
     app.add_handler(CommandHandler("new", new_command))
+    app.add_handler(CallbackQueryHandler(handle_wizard_callbacks, pattern="^wiz_"))
+    app.add_handler(CallbackQueryHandler(handle_approval_callback, pattern="^appr:"))
+    app.add_handler(CallbackQueryHandler(handle_revision_callbacks, pattern="^rev_"))
+    app.add_handler(CallbackQueryHandler(handle_action_callbacks, pattern="^act_"))
     app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
     app.add_handler(CallbackQueryHandler(handle_render_action, pattern="^action_render_quick$"))
     app.add_handler(CallbackQueryHandler(handle_render_story, pattern="^action_render_story$"))
