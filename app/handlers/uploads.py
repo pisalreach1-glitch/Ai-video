@@ -124,15 +124,12 @@ async def handle_video_upload(message: Message, state: FSMContext, bot: Bot) -> 
         caption = (message.caption or "").strip()
         if caption:
             await state.update_data(caption_text=caption)
-            await status_msg.edit_text(
-                texts.CAPTION_CONFIRM_PROMPT.format(caption=caption[:300]),
-                reply_markup=caption_confirm_keyboard(),
-            )
-        else:
-            await state.set_state(WizardStep.awaiting_narration_text)
-            await status_msg.edit_text(
-                texts.NARRATION_PROMPT.format(max_chars=config.max_narration_chars),
-            )
+
+        from app.ui.keyboards import narration_method_keyboard
+        await status_msg.edit_text(
+            texts.NARRATION_METHOD_PROMPT.format(duration=media_info.duration),
+            reply_markup=narration_method_keyboard(job_id, has_caption=bool(caption)),
+        )
 
     except Exception as e:
         logger.exception(f"Failed to process uploaded video for job {job_id}: {e}")

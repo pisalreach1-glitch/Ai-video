@@ -7,6 +7,7 @@ from aiogram.types import CallbackQuery
 from app.config import config
 from app.domain.states import JobState
 from app.storage.jobs import job_storage
+from app.handlers.common import safe_edit_message
 from app.ui import texts_km as texts
 from app.ui.keyboards import history_keyboard, job_completed_keyboard, main_menu_keyboard
 
@@ -24,7 +25,8 @@ async def cb_my_videos_page(call: CallbackQuery) -> None:
     jobs, total = job_storage.list_user_jobs(user_id=user_id, limit=PAGE_SIZE, offset=offset)
 
     if total == 0:
-        await call.message.edit_text(
+        await safe_edit_message(
+            call,
             texts.HISTORY_EMPTY,
             reply_markup=main_menu_keyboard(has_active_job=False),
         )
@@ -43,7 +45,8 @@ async def cb_my_videos_page(call: CallbackQuery) -> None:
         })
 
     text = texts.HISTORY_TITLE.format(page=page, total_pages=total_pages)
-    await call.message.edit_text(
+    await safe_edit_message(
+        call,
         text,
         reply_markup=history_keyboard(page=page, total_pages=total_pages, job_items=items),
     )
@@ -71,7 +74,8 @@ async def cb_history_job_detail(call: CallbackQuery) -> None:
     if not has_final:
         msg += f"\n{texts.HISTORY_EXPIRED.format(retention=config.job_retention_hours)}"
 
-    await call.message.edit_text(
+    await safe_edit_message(
+        call,
         msg,
         reply_markup=job_completed_keyboard(job_id=job_id, has_srt=has_srt),
     )

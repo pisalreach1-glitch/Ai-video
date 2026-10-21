@@ -40,6 +40,27 @@ def link_failure_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ Back", callback_data="nav_main")],
     ])
 
+def narration_method_keyboard(job_id: str, has_caption: bool = False) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="🌐 បកប្រែសំឡេងវីដេអូ (AI Auto-Translate)", callback_data=f"act_trans:{job_id}")],
+        [InlineKeyboardButton(text="✍️ វាយអត្ថបទដោយខ្លួនឯង (Manual Text)", callback_data=f"act_text:{job_id}")],
+    ]
+    if has_caption:
+        rows.append([InlineKeyboardButton(text="📝 ប្រើ Caption នៃវីដេអូ", callback_data="caption_use")])
+    rows.append([InlineKeyboardButton(text="❌ បោះបង់", callback_data=f"job_cancel:{job_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def translation_review_keyboard(job_id: str, revision_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎙️ បង្កើតសំឡេងអាន AI", callback_data=f"set_proceed:{job_id}:{revision_id}")],
+        [
+            InlineKeyboardButton(text="✏️ កែអត្ថបទ", callback_data=f"edit_text:{job_id}:{revision_id}"),
+            InlineKeyboardButton(text="⚙️ កែ Settings", callback_data=f"edit_voice:{job_id}:{revision_id}"),
+        ],
+        [InlineKeyboardButton(text="🔄 បកប្រែឡើងវិញ", callback_data=f"act_trans:{job_id}")],
+        [InlineKeyboardButton(text="❌ បោះបង់", callback_data=f"job_cancel:{job_id}")],
+    ])
+
 def narration_confirm_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ ប្រើអត្ថបទនេះ", callback_data="narration_confirm")],
