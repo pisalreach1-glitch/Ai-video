@@ -45,3 +45,78 @@ def test_ownership_verification(temp_job_storage):
 
     # Wrong chat
     assert temp_job_storage.verify_ownership(job.job_id, 555, 999) is False
+
+@pytest.mark.asyncio
+async def test_stale_preview_and_edit_handlers_rejected(temp_job_storage, monkeypatch):
+    """Ensure aud_next, dur_pick, apprv_final, edit_text, and edit_settings reject stale revision 1 when current revision is 2."""
+    import app.handlers.previews
+    import app.handlers.common
+    monkeypatch.setattr(app.handlers.previews, "job_storage", temp_job_storage)
+    monkeypatch.setattr(app.handlers.common, "job_storage", temp_job_storage)
+
+    job = temp_job_storage.create_job(user_id=10, chat_id=20)
+    r1 = temp_job_storage.create_revision(job.job_id, "Rev 1 text", VoiceSettings())
+    r2 = temp_job_storage.create_revision(job.job_id, "Rev 2 text", VoiceSettings())
+    temp_job_storage.set_job_status(job.job_id, JobState.AWAITING_AUDIO_REVIEW)
+
+    answered_alerts = []
+
+    class MockMsg:
+        chat = type("Chat", (), {"id": 20})()
+        video = None
+        document = None
+        photo = None
+
+        async def answer(self, text, reply_markup=None):
+            pass
+
+        async def edit_reply_markup(self, reply_markup=None):
+            pass
+
+    class MockCall:
+        def __init__(self, data):
+            self.data = data
+            self.from_user = type("User", (), {"id": 10})()
+            self.message = MockMsg()
+
+        async def answer(self, text="", show_alert=False):
+            answered_alerts.append(text)
+
+    class MockState:
+        async def set_state(self, s):
+            pass
+        async def update_data(self, **kwargs):
+            pass
+
+    # 1. aud_next for stale revision 1
+    call1 = MockCall(f"aud_next:{job.job_id}:{r1.revision_id}")
+    await app.handlers.previews.cb_audio_next_to_preview(call1, MockState())
+    assert any("ហួសសម័យ" in a for a in answered_alerts)
+    assert temp_job_storage.claim_next_task() is None
+
+    # 2. dur_pick for stale revision 1
+    answered_alerts.clear()
+    call2 = MockCall(f"dur_pick:fit_video:{job.job_id}:{r1.revision_id}")
+    await app.handlers.previews.cb_duration_policy_picked(call2, MockState())
+    assert any("ហួសសម័យ" in a for a in answered_alerts)
+    assert temp_job_storage.claim_next_task() is None
+
+    # 3. apprv_final for stale revision 1
+    answered_alerts.clear()
+    temp_job_storage.set_job_status(job.job_id, JobState.AWAITING_APPROVAL)
+    call3 = MockCall(f"apprv_final:{job.job_id}:{r1.revision_id}")
+    await app.handlers.previews.cb_approve_final(call3, MockState())
+    assert any("ហួសសម័យ" in a for a in answered_alerts)
+    assert temp_job_storage.claim_next_task() is None
+
+    # 4. edit_text for stale revision 1
+    answered_alerts.clear()
+    call4 = MockCall(f"edit_text:{job.job_id}:{r1.revision_id}")
+    await app.handlers.previews.cb_edit_text(call4, MockState())
+    assert any("ហួសសម័យ" in a for a in answered_alerts)
+
+    # 5. edit_voice for stale revision 1
+    answered_alerts.clear()
+    call5 = MockCall(f"edit_voice:{job.job_id}:{r1.revision_id}")
+    await app.handlers.previews.cb_edit_settings_forward(call5, MockState())
+    assert any("ហួសសម័យ" in a for a in answered_alerts)

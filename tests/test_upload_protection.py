@@ -103,3 +103,81 @@ async def test_job_edit_completed_screen_safety(temp_job_storage, monkeypatch):
     assert latest.revision_id == 2
     assert latest.audio_path == "/tmp/aud.mp3"
     assert latest.audio_duration == 4.5
+
+@pytest.mark.asyncio
+async def test_concurrent_uploads_prevent_overwriting_same_destination(temp_job_storage, monkeypatch, tmp_path):
+    """Ensure two rapid concurrent uploads cannot overwrite each other or share the same destination."""
+    import asyncio
+    import app.handlers.uploads
+    from app.domain.models import MediaInfo
+    monkeypatch.setattr(app.handlers.uploads, "job_storage", temp_job_storage)
+    monkeypatch.setattr("app.handlers.uploads.probe_media", lambda p: MediaInfo(width=1920, height=1080, duration=10.0, has_audio=True))
+
+    user_id = 999
+    chat_id = 888
+
+    # Start with an awaiting_source job in state
+    init_job = temp_job_storage.create_job(user_id=user_id, chat_id=chat_id, source_type="upload")
+    temp_job_storage.set_job_status(init_job.job_id, JobState.AWAITING_SOURCE)
+
+    downloaded_dests = []
+    replies = []
+
+    class MockStatusMsg:
+        async def edit_text(self, text, reply_markup=None):
+            pass
+
+    class MockMsg:
+        def __init__(self, tag):
+            self.tag = tag
+            self.from_user = type("User", (), {"id": user_id})()
+            self.chat = type("Chat", (), {"id": chat_id})()
+            self.video = type("Video", (), {"file_id": f"vid_{tag}", "file_size": 5000, "file_name": f"{tag}.mp4"})()
+            self.document = None
+            self.caption = None
+
+        async def reply(self, text, reply_markup=None):
+            replies.append((self.tag, text))
+            return MockStatusMsg()
+
+    class MockBot:
+        async def get_file(self, file_id):
+            return type("FileObj", (), {"file_path": f"/remote/{file_id}"})()
+
+        async def download_file(self, file_path, destination):
+            from pathlib import Path
+            p_dest = Path(destination)
+            downloaded_dests.append((file_path, str(p_dest)))
+            p_dest.parent.mkdir(parents=True, exist_ok=True)
+            p_dest.write_text(f"content from {file_path}")
+            await asyncio.sleep(0.05)
+
+    class MockState:
+        def __init__(self):
+            self.data = {"job_id": init_job.job_id}
+        async def get_data(self):
+            return dict(self.data)
+        async def update_data(self, **kwargs):
+            self.data.update(kwargs)
+        async def set_state(self, s):
+            pass
+
+    msg1 = MockMsg("upload1")
+    msg2 = MockMsg("upload2")
+    bot = MockBot()
+    state1 = MockState()
+    state2 = MockState()
+
+    await asyncio.gather(
+        app.handlers.uploads.handle_video_upload(msg1, state1, bot),
+        app.handlers.uploads.handle_video_upload(msg2, state2, bot),
+    )
+
+    # One download succeeded
+    assert len(downloaded_dests) == 1
+    # The other message was rejected with active job warning
+    assert any("មានការងារវីដេអូមួយកំពុងដំណើរការ" in r[1] for r in replies)
+
+    # Job ended up in awaiting text
+    job_after = temp_job_storage.get_job(init_job.job_id)
+    assert job_after.status == JobState.AWAITING_TEXT

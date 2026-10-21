@@ -121,7 +121,18 @@ async def cb_proceed_to_audio(call: CallbackQuery, state: FSMContext, bot: Bot) 
         _, job_id, rev_id_str = call.data.split(":")
         rev_id = int(rev_id_str)
 
-    if not job_id or not await verify_callback_job(call, job_id):
+    if not job_id or not await verify_callback_job(
+        call,
+        job_id,
+        expected_rev=rev_id,
+        allowed_states=(
+            JobState.AWAITING_SETTINGS,
+            JobState.AWAITING_AUDIO_REVIEW,
+            JobState.AWAITING_DURATION_CHOICE,
+            JobState.AWAITING_APPROVAL,
+            JobState.FAILED,
+        ),
+    ):
         return
 
     rev = job_storage.get_revision(job_id, rev_id) if rev_id else job_storage.get_latest_revision(job_id)
@@ -196,10 +207,15 @@ async def cb_proceed_to_audio(call: CallbackQuery, state: FSMContext, bot: Bot) 
 @router.callback_query(F.data.startswith("dur_pick:"))
 async def cb_duration_policy_picked(call: CallbackQuery, state: FSMContext) -> None:
     _, policy, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    rev_id = int(rev_id_str)
+    if not await verify_callback_job(
+        call,
+        job_id,
+        expected_rev=rev_id,
+        allowed_states=(JobState.AWAITING_DURATION_CHOICE, JobState.AWAITING_AUDIO_REVIEW),
+    ):
         return
 
-    rev_id = int(rev_id_str)
     rev = job_storage.get_revision(job_id, rev_id)
     if not rev:
         await call.answer(texts.INVALID_ACTION, show_alert=True)
@@ -215,16 +231,31 @@ async def cb_duration_policy_picked(call: CallbackQuery, state: FSMContext) -> N
 @router.callback_query(F.data.startswith("aud_next:"))
 async def cb_audio_next_to_preview(call: CallbackQuery, state: FSMContext) -> None:
     _, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    rev_id = int(rev_id_str)
+    if not await verify_callback_job(
+        call,
+        job_id,
+        expected_rev=rev_id,
+        allowed_states=(JobState.AWAITING_AUDIO_REVIEW, JobState.AWAITING_DURATION_CHOICE),
+    ):
         return
 
-    rev_id = int(rev_id_str)
     await _start_video_preview(call, job_id, rev_id, state)
 
 async def _start_video_preview(call: CallbackQuery, job_id: str, rev_id: int, state: FSMContext) -> None:
     job = job_storage.get_job(job_id)
     if not job:
         await call.answer(texts.INVALID_ACTION, show_alert=True)
+        return
+
+    # Reject outdated revision
+    if job.current_revision_id != rev_id:
+        await call.answer(texts.APPROVAL_OUTDATED, show_alert=True)
+        return
+
+    # Prevent duplicate clicks
+    if job.status in (JobState.PREVIEW_QUEUED, JobState.PREVIEW_RENDERING, JobState.FINAL_QUEUED, JobState.RENDERING, JobState.UPLOADING):
+        await call.answer(texts.ALREADY_PROCESSING, show_alert=True)
         return
 
     # Check queue
@@ -247,7 +278,12 @@ async def cb_approve_final(call: CallbackQuery, state: FSMContext) -> None:
     _, job_id, rev_id_str = call.data.split(":")
     rev_id = int(rev_id_str)
 
-    if not await verify_callback_job(call, job_id):
+    if not await verify_callback_job(
+        call,
+        job_id,
+        expected_rev=rev_id,
+        allowed_states=(JobState.AWAITING_APPROVAL,),
+    ):
         return
 
     job = job_storage.get_job(job_id)
@@ -291,10 +327,21 @@ async def cb_approve_final(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("edit_text:"))
 async def cb_edit_text(call: CallbackQuery, state: FSMContext) -> None:
     _, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    rev_id = int(rev_id_str)
+    if not await verify_callback_job(
+        call,
+        job_id,
+        expected_rev=rev_id,
+        allowed_states=(
+            JobState.AWAITING_SETTINGS,
+            JobState.AWAITING_AUDIO_REVIEW,
+            JobState.AWAITING_DURATION_CHOICE,
+            JobState.AWAITING_APPROVAL,
+        ),
+    ):
         return
 
-    await state.update_data(job_id=job_id, revision_id=int(rev_id_str))
+    await state.update_data(job_id=job_id, revision_id=rev_id)
     await state.set_state(WizardStep.awaiting_narration_text)
 
     # Remove buttons from video message if clicked on video
@@ -310,10 +357,21 @@ async def cb_edit_text(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("edit_fmt:"))
 async def cb_edit_settings_forward(call: CallbackQuery, state: FSMContext) -> None:
     action, job_id, rev_id_str = call.data.split(":")
-    if not await verify_callback_job(call, job_id):
+    rev_id = int(rev_id_str)
+    if not await verify_callback_job(
+        call,
+        job_id,
+        expected_rev=rev_id,
+        allowed_states=(
+            JobState.AWAITING_SETTINGS,
+            JobState.AWAITING_AUDIO_REVIEW,
+            JobState.AWAITING_DURATION_CHOICE,
+            JobState.AWAITING_APPROVAL,
+        ),
+    ):
         return
 
-    rev = job_storage.get_revision(job_id, int(rev_id_str))
+    rev = job_storage.get_revision(job_id, rev_id)
     if not rev:
         await call.answer(texts.INVALID_ACTION, show_alert=True)
         return

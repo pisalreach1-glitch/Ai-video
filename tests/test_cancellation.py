@@ -71,3 +71,60 @@ def test_recover_interrupted_jobs_on_startup(temp_job_storage):
     j2_after = temp_job_storage.get_job(job2.job_id)
     assert j2_after.status == JobState.INTERRUPTED
     assert j2_after.stage == "interrupted:preview_rendering"
+
+@pytest.mark.asyncio
+async def test_retry_interrupted_downloading_job_without_revision(temp_job_storage, monkeypatch):
+    """Verify that retrying a job interrupted during downloading works even when no revision has been created yet."""
+    import app.handlers.jobs
+    monkeypatch.setattr(app.handlers.jobs, "job_storage", temp_job_storage)
+
+    job = temp_job_storage.create_job(user_id=10, chat_id=20, source_type="link")
+    temp_job_storage.set_job_status(job.job_id, JobState.INTERRUPTED, stage="interrupted:downloading")
+
+    # Confirm there are NO revisions for this job
+    assert temp_job_storage.get_latest_revision(job.job_id) is None
+
+    answered_text = None
+    edited_text = None
+
+    class MockMsg:
+        chat = type("Chat", (), {"id": 20})()
+        video = None
+        document = None
+        photo = None
+
+        async def edit_text(self, text, reply_markup=None):
+            nonlocal edited_text
+            edited_text = text
+
+    class MockCall:
+        data = f"retry_job:{job.job_id}:1"
+        from_user = type("User", (), {"id": 10})()
+        message = MockMsg()
+
+        async def answer(self, text="", show_alert=False):
+            nonlocal answered_text
+            answered_text = text
+
+    class MockState:
+        current_state = None
+        stored_data = {}
+
+        async def set_state(self, s):
+            self.current_state = s
+
+        async def update_data(self, **kwargs):
+            self.stored_data.update(kwargs)
+
+    state = MockState()
+    call = MockCall()
+
+    await app.handlers.jobs.cb_retry_interrupted_job(call, state, None)
+
+    # Must NOT return "Job or revision not found."
+    assert answered_text != "Job or revision not found."
+    assert "សូមផ្ញើ Link ឬ Upload វីដេអូឡើងវិញ" in answered_text
+
+    # Job status reset to AWAITING_SOURCE
+    refreshed = temp_job_storage.get_job(job.job_id)
+    assert refreshed.status == JobState.AWAITING_SOURCE

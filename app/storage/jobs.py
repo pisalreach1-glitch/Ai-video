@@ -61,6 +61,72 @@ class JobStorage:
         )
         return job
 
+    def claim_or_create_upload_job(
+        self,
+        user_id: int,
+        chat_id: int,
+        candidate_job_id: str | None = None,
+    ) -> Job:
+        """
+        Atomically claim an existing AWAITING_SOURCE job or create a new job in DOWNLOADING state.
+        Guarantees that two concurrent uploads cannot claim the same job or write to the same destination.
+        """
+        conn = self.db.get_connection()
+        now = time.time()
+
+        if candidate_job_id:
+            cur = conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, stage = 'downloading', updated_at = ?
+                WHERE job_id = ? AND user_id = ? AND chat_id = ?
+                  AND status = ? AND source_path IS NULL
+                """,
+                (JobState.DOWNLOADING.value, now, candidate_job_id, user_id, chat_id, JobState.AWAITING_SOURCE.value)
+            )
+            if cur.rowcount > 0:
+                claimed = self.get_job(candidate_job_id)
+                if claimed:
+                    return claimed
+
+        job_id = str(uuid.uuid4())
+        job = Job(
+            job_id=job_id,
+            user_id=user_id,
+            chat_id=chat_id,
+            source_type="upload",
+            status=JobState.DOWNLOADING,
+            stage="downloading",
+            created_at=now,
+            updated_at=now,
+        )
+        conn.execute(
+            """
+            INSERT INTO jobs (
+                job_id, user_id, chat_id, source_type, source_path, source_url,
+                source_media_info, status, stage, current_revision_id,
+                duration_policy, error_message, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job.job_id,
+                job.user_id,
+                job.chat_id,
+                job.source_type,
+                None,
+                None,
+                None,
+                job.status.value,
+                job.stage,
+                job.current_revision_id,
+                job.duration_policy,
+                job.error_message,
+                job.created_at,
+                job.updated_at,
+            )
+        )
+        return job
+
     def get_job(self, job_id: str) -> Job | None:
         conn = self.db.get_connection()
         row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()

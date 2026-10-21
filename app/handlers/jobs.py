@@ -47,12 +47,35 @@ async def cb_retry_interrupted_job(call: CallbackQuery, state: FSMContext, bot: 
         return
 
     job = job_storage.get_job(job_id)
-    rev = job_storage.get_revision(job_id, rev_id)
-    if not job or not rev:
-        await call.answer("Job or revision not found.", show_alert=True)
+    if not job:
+        await call.answer("Job not found.", show_alert=True)
         return
 
     stage = job.stage or ""
+
+    # Case 0: Interrupted during downloading (user has not submitted narration yet, so no revision exists)
+    if (
+        stage in ("interrupted:downloading", "interrupted:download", "interrupted:upload")
+        or stage.startswith("interrupted:download")
+        or job.status == JobState.DOWNLOADING
+        or not job.source_path
+    ):
+        job_storage.set_job_status(job_id, JobState.AWAITING_SOURCE)
+        await state.update_data(job_id=job_id)
+        from app.ui.keyboards import source_choice_keyboard
+        if job.source_type == "link":
+            await state.set_state(WizardStep.awaiting_url_input)
+            await safe_edit_message(call, texts.LINK_PROMPT, reply_markup=source_choice_keyboard())
+        else:
+            await state.set_state(WizardStep.awaiting_video_source)
+            await safe_edit_message(call, texts.SOURCE_PROMPT, reply_markup=source_choice_keyboard())
+        await call.answer("សូមផ្ញើ Link ឬ Upload វីដេអូឡើងវិញ។")
+        return
+
+    rev = job_storage.get_revision(job_id, rev_id)
+    if not rev:
+        await call.answer("Job or revision not found.", show_alert=True)
+        return
 
     # Case 1: Interrupted during uploading (final video already rendered, just deliver)
     if stage == "interrupted:uploading" or (rev.final_path and Path(rev.final_path).exists()):
@@ -129,9 +152,12 @@ async def cb_retry_interrupted_job(call: CallbackQuery, state: FSMContext, bot: 
             await safe_edit_message(call, f"❌ ការបង្កើតសំឡេងបានបរាជ័យ៖ {e}")
             return
 
-    # Case 5: Interrupted during downloading
-    await state.set_state(WizardStep.awaiting_url_input)
-    await safe_edit_message(call, texts.LINK_PROMPT)
+    # Fallback: prompt for source input
+    job_storage.set_job_status(job_id, JobState.AWAITING_SOURCE)
+    await state.update_data(job_id=job_id)
+    await state.set_state(WizardStep.awaiting_video_source)
+    from app.ui.keyboards import source_choice_keyboard
+    await safe_edit_message(call, texts.SOURCE_PROMPT, reply_markup=source_choice_keyboard())
     await call.answer("សូមផ្ញើ Link ឬ Upload វីដេអូឡើងវិញ។")
 
 @router.callback_query(F.data.startswith("retry_dlv:"))
