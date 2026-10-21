@@ -23,6 +23,14 @@ class Settings:
     max_concurrent_jobs: int
     download_timeout_seconds: int
     subprocess_timeout_seconds: int
+    enable_timed_dubbing: bool = True
+    source_asr_model: str = "base"
+    source_asr_device: str = "cpu"
+    source_asr_compute_type: str = "int8"
+    dub_sample_rate: int = 48000
+    dub_max_tempo: float = 1.15
+    dub_max_segments: int = 120
+    translation_provider: str = "manual"
 
 def _find_binary(name: str, explicit_path: str | None = None) -> str:
     """Locate binary path or raise error."""
@@ -89,6 +97,14 @@ def load_settings() -> Settings:
         max_concurrent_jobs=int(os.getenv("MAX_CONCURRENT_JOBS", "1")),
         download_timeout_seconds=int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "120")),
         subprocess_timeout_seconds=int(os.getenv("SUBPROCESS_TIMEOUT_SECONDS", "300")),
+        enable_timed_dubbing=os.getenv("ENABLE_TIMED_DUBBING", "true").lower() in ("true", "1", "yes"),
+        source_asr_model=os.getenv("SOURCE_ASR_MODEL", "base"),
+        source_asr_device=os.getenv("SOURCE_ASR_DEVICE", "cpu"),
+        source_asr_compute_type=os.getenv("SOURCE_ASR_COMPUTE_TYPE", "int8"),
+        dub_sample_rate=int(os.getenv("DUB_SAMPLE_RATE", "48000")),
+        dub_max_tempo=float(os.getenv("DUB_MAX_TEMPO", "1.15")),
+        dub_max_segments=int(os.getenv("DUB_MAX_SEGMENTS", "120")),
+        translation_provider=os.getenv("TRANSLATION_PROVIDER", "manual"),
     )
 
 config = load_settings()

@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     status TEXT NOT NULL,
     stage TEXT DEFAULT 'init',
     current_revision_id INTEGER NOT NULL DEFAULT 1,
+    mode TEXT NOT NULL DEFAULT 'free_narration',
+    dubbing_revision_id INTEGER,
     duration_policy TEXT NOT NULL DEFAULT 'extend',
     error_message TEXT,
     created_at REAL NOT NULL,
@@ -63,6 +65,8 @@ CREATE TABLE IF NOT EXISTS revisions (
     subtitles_ass TEXT,
     preview_path TEXT,
     final_path TEXT,
+    mode TEXT NOT NULL DEFAULT 'free_narration',
+    dubbing_plan_path TEXT,
     created_at REAL NOT NULL,
     PRIMARY KEY (job_id, revision_id),
     FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE
@@ -113,6 +117,22 @@ class Database:
     def init_db(self) -> None:
         conn = self.get_connection()
         conn.executescript(SCHEMA_SQL)
+        self._run_migrations(conn)
+
+    def _run_migrations(self, conn: sqlite3.Connection) -> None:
+        # Additive migration for jobs table
+        job_cols = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+        if "mode" not in job_cols:
+            conn.execute("ALTER TABLE jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'free_narration'")
+        if "dubbing_revision_id" not in job_cols:
+            conn.execute("ALTER TABLE jobs ADD COLUMN dubbing_revision_id INTEGER")
+
+        # Additive migration for revisions table
+        rev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(revisions)").fetchall()}
+        if "mode" not in rev_cols:
+            conn.execute("ALTER TABLE revisions ADD COLUMN mode TEXT NOT NULL DEFAULT 'free_narration'")
+        if "dubbing_plan_path" not in rev_cols:
+            conn.execute("ALTER TABLE revisions ADD COLUMN dubbing_plan_path TEXT")
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:

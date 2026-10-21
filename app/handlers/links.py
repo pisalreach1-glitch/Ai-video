@@ -86,10 +86,10 @@ async def handle_url_input(message: Message, state: FSMContext) -> None:
         job_storage.set_job_source(job_id, str(dest_path), media_info, source_url=url)
         job_storage.set_job_status(job_id, JobState.AWAITING_TEXT)
 
-        from app.ui.keyboards import narration_method_keyboard
+        from app.ui.keyboards import mode_choice_keyboard
         await status_msg.edit_text(
-            texts.NARRATION_METHOD_PROMPT.format(duration=media_info.duration),
-            reply_markup=narration_method_keyboard(job_id, has_caption=False),
+            texts.MODE_CHOICE_PROMPT.format(duration=media_info.duration),
+            reply_markup=mode_choice_keyboard(job_id, has_caption=False),
         )
 
     except DownloadSecurityError as e:

@@ -99,3 +99,11 @@ DURATION_POLICIES = {
     DURATION_LOOP: {"id": DURATION_LOOP, "label": "🔁 ចាក់វីដេអូឡើងវិញ (Loop)"},
     DURATION_SHORTEN: {"id": DURATION_SHORTEN, "label": "✏️ កាត់បន្ថយអត្ថបទ (Shorten)"},
 }
+
+# Video workflow modes
+MODE_FREE = "free_narration"
+MODE_DUB = "source_timed"
+MODE_LABELS = {
+    MODE_FREE: "🎙️ Narration ថ្មី (Free Narration)",
+    MODE_DUB: "🌐 បកប្រែតាមពេលវីដេអូដើម (Source-Timed Khmer Dubbing)",
+}

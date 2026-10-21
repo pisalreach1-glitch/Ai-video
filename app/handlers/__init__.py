@@ -5,6 +5,8 @@ from app.handlers import (
     navigation,
     uploads,
     links,
+    modes,
+    dubbing,
     narration,
     settings,
     previews,
@@ -18,6 +20,8 @@ def register_all_handlers(dp: Dispatcher) -> None:
     dp.include_router(navigation.router)
     dp.include_router(uploads.router)
     dp.include_router(links.router)
+    dp.include_router(modes.router)
+    dp.include_router(dubbing.router)
     dp.include_router(narration.router)
     dp.include_router(settings.router)
     dp.include_router(previews.router)

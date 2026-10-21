@@ -53,6 +53,46 @@ class WorkspaceManager:
     def get_final_video_path(self, job_id: str, revision_id: int) -> Path:
         return self.get_revision_dir(job_id, revision_id) / "final.mp4"
 
+    def get_analysis_dir(self, job_id: str, key: str = "default") -> Path:
+        analysis_dir = self.get_job_dir(job_id) / "analysis" / key
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+        return analysis_dir
+
+    def get_source_audio_path(self, job_id: str, key: str = "default") -> Path:
+        return self.get_analysis_dir(job_id, key) / "source_audio.wav"
+
+    def get_source_segments_path(self, job_id: str, key: str = "default") -> Path:
+        return self.get_analysis_dir(job_id, key) / "source_segments.json"
+
+    def get_dubbing_plan_path(self, job_id: str, revision_id: int) -> Path:
+        return self.get_revision_dir(job_id, revision_id) / "dubbing.json"
+
+    def get_segment_dir(self, job_id: str, revision_id: int, segment_id: str) -> Path:
+        seg_dir = self.get_revision_dir(job_id, revision_id) / "segments" / segment_id
+        seg_dir.mkdir(parents=True, exist_ok=True)
+        return seg_dir
+
+    def get_segment_voice_mp3(self, job_id: str, revision_id: int, segment_id: str) -> Path:
+        return self.get_segment_dir(job_id, revision_id, segment_id) / "voice.mp3"
+
+    def get_segment_voice_wav(self, job_id: str, revision_id: int, segment_id: str) -> Path:
+        return self.get_segment_dir(job_id, revision_id, segment_id) / "voice.wav"
+
+    def get_segment_fitted_wav(self, job_id: str, revision_id: int, segment_id: str) -> Path:
+        return self.get_segment_dir(job_id, revision_id, segment_id) / "fitted.wav"
+
+    def get_segment_tts_events_path(self, job_id: str, revision_id: int, segment_id: str) -> Path:
+        return self.get_segment_dir(job_id, revision_id, segment_id) / "tts_events.json"
+
+    def get_placements_path(self, job_id: str, revision_id: int) -> Path:
+        return self.get_revision_dir(job_id, revision_id) / "placements.json"
+
+    def get_timeline_audio_path(self, job_id: str, revision_id: int) -> Path:
+        return self.get_revision_dir(job_id, revision_id) / "narration_timeline.wav"
+
+    def get_sync_report_path(self, job_id: str, revision_id: int) -> Path:
+        return self.get_revision_dir(job_id, revision_id) / "sync_report.json"
+
     def get_voice_sample_path(self, voice_name: str) -> Path:
         safe_name = "".join(c for c in voice_name if c.isalnum() or c in "-_")
         return self.voice_samples_dir / f"{safe_name}.mp3"

@@ -38,9 +38,9 @@ class JobStorage:
             """
             INSERT INTO jobs (
                 job_id, user_id, chat_id, source_type, source_path, source_url,
-                source_media_info, status, stage, current_revision_id,
+                source_media_info, status, stage, current_revision_id, mode, dubbing_revision_id,
                 duration_policy, error_message, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job.job_id,
@@ -53,6 +53,8 @@ class JobStorage:
                 job.status.value,
                 job.stage,
                 job.current_revision_id,
+                job.mode,
+                job.dubbing_revision_id,
                 job.duration_policy,
                 job.error_message,
                 job.created_at,
@@ -104,9 +106,9 @@ class JobStorage:
             """
             INSERT INTO jobs (
                 job_id, user_id, chat_id, source_type, source_path, source_url,
-                source_media_info, status, stage, current_revision_id,
+                source_media_info, status, stage, current_revision_id, mode, dubbing_revision_id,
                 duration_policy, error_message, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job.job_id,
@@ -119,6 +121,8 @@ class JobStorage:
                 job.status.value,
                 job.stage,
                 job.current_revision_id,
+                job.mode,
+                job.dubbing_revision_id,
                 job.duration_policy,
                 job.error_message,
                 job.created_at,
@@ -195,6 +199,16 @@ class JobStorage:
             (policy, now, job_id)
         )
 
+    def set_job_mode(self, job_id: str, mode: str) -> None:
+        conn = self.db.get_connection()
+        now = time.time()
+        conn.execute("UPDATE jobs SET mode = ?, updated_at = ? WHERE job_id = ?", (mode, now, job_id))
+
+    def set_job_dubbing_revision(self, job_id: str, dubbing_rev_id: int) -> None:
+        conn = self.db.get_connection()
+        now = time.time()
+        conn.execute("UPDATE jobs SET dubbing_revision_id = ?, updated_at = ? WHERE job_id = ?", (dubbing_rev_id, now, job_id))
+
     # ---------------- Revision Operations ----------------
     def create_revision(
         self,
@@ -204,6 +218,8 @@ class JobStorage:
         audio_path: str | None = None,
         audio_duration: float = 0.0,
         subtitles_srt: str | None = None,
+        mode: str = "free_narration",
+        dubbing_plan_path: str | None = None,
     ) -> Revision:
         conn = self.db.get_connection()
         now = time.time()
@@ -219,8 +235,8 @@ class JobStorage:
             INSERT INTO revisions (
                 job_id, revision_id, narration_text, settings,
                 audio_path, audio_duration, subtitles_srt, subtitles_ass,
-                preview_path, final_path, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                preview_path, final_path, mode, dubbing_plan_path, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id,
@@ -233,6 +249,8 @@ class JobStorage:
                 None,
                 None,
                 None,
+                mode,
+                dubbing_plan_path,
                 now,
             )
         )
@@ -250,6 +268,8 @@ class JobStorage:
             audio_path=audio_path,
             audio_duration=audio_duration,
             subtitles_srt=subtitles_srt,
+            mode=mode,
+            dubbing_plan_path=dubbing_plan_path,
             created_at=now,
         )
 

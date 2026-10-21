@@ -125,10 +125,10 @@ async def handle_video_upload(message: Message, state: FSMContext, bot: Bot) -> 
         if caption:
             await state.update_data(caption_text=caption)
 
-        from app.ui.keyboards import narration_method_keyboard
+        from app.ui.keyboards import mode_choice_keyboard
         await status_msg.edit_text(
-            texts.NARRATION_METHOD_PROMPT.format(duration=media_info.duration),
-            reply_markup=narration_method_keyboard(job_id, has_caption=bool(caption)),
+            texts.MODE_CHOICE_PROMPT.format(duration=media_info.duration),
+            reply_markup=mode_choice_keyboard(job_id, has_caption=bool(caption)),
         )
 
     except Exception as e:

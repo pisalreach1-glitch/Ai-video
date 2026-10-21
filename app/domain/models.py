@@ -100,6 +100,8 @@ class Revision:
     subtitles_ass: str | None = None
     preview_path: str | None = None
     final_path: str | None = None
+    mode: str = "free_narration"       # "free_narration" | "source_timed"
+    dubbing_plan_path: str | None = None
     created_at: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -114,6 +116,8 @@ class Revision:
             "subtitles_ass": self.subtitles_ass,
             "preview_path": self.preview_path,
             "final_path": self.final_path,
+            "mode": self.mode,
+            "dubbing_plan_path": self.dubbing_plan_path,
             "created_at": self.created_at,
         }
 
@@ -141,6 +145,8 @@ class Revision:
             subtitles_ass=data.get("subtitles_ass"),
             preview_path=data.get("preview_path"),
             final_path=data.get("final_path"),
+            mode=str(data.get("mode", "free_narration")),
+            dubbing_plan_path=data.get("dubbing_plan_path"),
             created_at=float(data.get("created_at", 0.0)),
         )
 
@@ -156,6 +162,8 @@ class Job:
     status: JobState = JobState.AWAITING_SOURCE
     stage: str = "init"
     current_revision_id: int = 1
+    mode: str = "free_narration"        # "free_narration" | "source_timed"
+    dubbing_revision_id: int | None = None
     duration_policy: str = "extend"
     error_message: str | None = None
     created_at: float = 0.0
@@ -173,6 +181,8 @@ class Job:
             "status": self.status.value if isinstance(self.status, JobState) else str(self.status),
             "stage": self.stage,
             "current_revision_id": self.current_revision_id,
+            "mode": self.mode,
+            "dubbing_revision_id": self.dubbing_revision_id,
             "duration_policy": self.duration_policy,
             "error_message": self.error_message,
             "created_at": self.created_at,
@@ -207,6 +217,8 @@ class Job:
             status=status_enum,
             stage=str(data.get("stage", "init")),
             current_revision_id=int(data.get("current_revision_id", 1)),
+            mode=str(data.get("mode", "free_narration")),
+            dubbing_revision_id=int(data["dubbing_revision_id"]) if data.get("dubbing_revision_id") is not None else None,
             duration_policy=str(data.get("duration_policy", "extend")),
             error_message=data.get("error_message"),
             created_at=float(data.get("created_at", 0.0)),

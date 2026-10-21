@@ -89,6 +89,7 @@ async def render_video(
     timeout_seconds: float = 300.0,
     cancel_check: Callable[[], bool] | None = None,
     on_pid: Callable[[int], None] | None = None,
+    mode: str = "free_narration",
 ) -> Path:
     """
     Renders video using FFmpeg with proper aspect ratio, framing, audio mix, and subtitles.
@@ -115,6 +116,7 @@ async def render_video(
         subtitles_ass_path=subtitles_ass_path,
         is_preview=is_preview,
         preview_duration=preview_duration,
+        mode=mode,
     )
 
     a_filter, a_map = build_audio_filter(

@@ -189,3 +189,63 @@ def parse_srt_events(srt_path: Path | str) -> list[dict[str, Any]]:
                     except Exception:
                         pass
     return events
+
+def build_timeline_subtitles(
+    plan: Any,
+    output_srt: Path | str,
+    output_ass: Path | str,
+    color: str = "white",
+    position: str = "bottom",
+    res_x: int = 1080,
+    res_y: int = 1920,
+) -> list[dict[str, Any]]:
+    """
+    Transforms per-utterance TTS cues to the master video timeline using placement offsets
+    and tempo scaling, then writes timeline SRT and styled ASS files.
+    """
+    timeline_events: list[dict[str, Any]] = []
+
+    for clip in plan.clips:
+        placement = plan.get_placement(clip.segment_id)
+        if not placement:
+            continue
+
+        tempo = clip.tempo_factor if clip.tempo_factor > 0 else 1.0
+        t_start_sec = placement.timeline_start_ms / 1000.0
+        speech_end_sec = placement.speech_end_ms / 1000.0
+
+        if clip.tts_events:
+            for ev in clip.tts_events:
+                c_start = t_start_sec + (float(ev["start"]) / tempo)
+                c_end = t_start_sec + (float(ev["end"]) / tempo)
+                c_end = min(c_end, speech_end_sec)
+                if c_end > c_start:
+                    timeline_events.append({
+                        "start": round(c_start, 3),
+                        "end": round(c_end, 3),
+                        "text": ev["text"],
+                    })
+        else:
+            t_seg = plan.get_translation(clip.segment_id)
+            if t_seg and t_seg.translated_text:
+                timeline_events.append({
+                    "start": round(t_start_sec, 3),
+                    "end": round(speech_end_sec, 3),
+                    "text": t_seg.translated_text,
+                })
+
+    # Sort strictly by start time
+    timeline_events.sort(key=lambda x: x["start"])
+
+    # Write files
+    generate_srt(timeline_events, output_srt)
+    generate_ass(
+        timeline_events,
+        output_ass,
+        color=color,
+        position=position,
+        res_x=res_x,
+        res_y=res_y,
+    )
+
+    return timeline_events

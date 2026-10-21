@@ -102,6 +102,7 @@ def build_video_filter(
     subtitles_ass_path: Path | str | None = None,
     is_preview: bool = False,
     preview_duration: float = 5.0,
+    mode: str = "free_narration",
 ) -> tuple[str, int, int]:
     """
     Construct FFmpeg video filtergraph covering:
@@ -145,8 +146,10 @@ def build_video_filter(
         filters.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
 
     # 3. Duration handling on the video stream
-    # If source is shorter than target narration duration
-    if source_info.duration > 0 and source_info.duration < target_duration:
+    if mode == "source_timed":
+        # In source-timed mode: maintain original video sequence unchanged, never freeze or loop
+        filters.append(f"trim=duration={target_duration}")
+    elif source_info.duration > 0 and source_info.duration < target_duration:
         diff = target_duration - source_info.duration
         if settings.duration_policy == "loop":
             # Loop filter

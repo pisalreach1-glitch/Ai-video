@@ -6,8 +6,16 @@ class JobState(str, Enum):
     AWAITING_SOURCE = "awaiting_source"
     AWAITING_URL = "awaiting_url"
     DOWNLOADING = "downloading"
+    AWAITING_MODE = "awaiting_mode"
     AWAITING_TEXT = "awaiting_text"
     AWAITING_SETTINGS = "awaiting_settings"
+    ANALYZING_SOURCE = "analyzing_source"
+    TRANSLATING_SEGMENTS = "translating_segments"
+    AWAITING_SEGMENT_REVIEW = "awaiting_segment_review"
+    GENERATING_SEGMENTS = "generating_segments"
+    CHECKING_FIT = "checking_fit"
+    AWAITING_FIT_RESOLUTION = "awaiting_fit_resolution"
+    ASSEMBLING_TIMELINE = "assembling_timeline"
     AUDIO_QUEUED = "audio_queued"
     GENERATING_AUDIO = "generating_audio"
     AWAITING_AUDIO_REVIEW = "awaiting_audio_review"
@@ -29,6 +37,7 @@ class WizardStep(StatesGroup):
     idle = State()
     awaiting_video_source = State()
     awaiting_url_input = State()
+    mode_choice = State()
     awaiting_narration_text = State()
     editing_narration_text = State()
     customizing_settings = State()
@@ -36,3 +45,6 @@ class WizardStep(StatesGroup):
     duration_choice = State()
     preview_review = State()
     rendering_in_progress = State()
+    dubbing_review = State()
+    editing_segment_text = State()
+    resolving_fit = State()

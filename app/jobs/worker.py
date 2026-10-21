@@ -123,12 +123,21 @@ class WorkerPool:
         def on_pid(pid: int) -> None:
             self._active_pids[job_id] = pid
 
+        mode = revision.mode or (job.mode if job else "free_narration")
         cancel_check = lambda: self.is_cancelled(job_id)
 
         try:
             if task_type == "preview":
                 job_storage.set_job_status(job_id, JobState.PREVIEW_RENDERING)
                 preview_dest = workspace.get_preview_video_path(job_id, revision_id)
+
+                preview_start_time = 0.0
+                if mode == "source_timed":
+                    from app.storage.dubbing import load_dubbing_plan
+                    plan = load_dubbing_plan(job_id, revision_id)
+                    if plan and plan.placements:
+                        first_ms = plan.placements[0].timeline_start_ms
+                        preview_start_time = max(0.0, (first_ms / 1000.0) - 0.5)
 
                 await render_preview_video(
                     source_path=source_path,
@@ -141,6 +150,8 @@ class WorkerPool:
                     timeout_seconds=float(config.subprocess_timeout_seconds),
                     cancel_check=cancel_check,
                     on_pid=on_pid,
+                    mode=mode,
+                    start_time=preview_start_time,
                 )
 
                 if cancel_check():
@@ -176,6 +187,7 @@ class WorkerPool:
                     timeout_seconds=float(config.subprocess_timeout_seconds),
                     cancel_check=cancel_check,
                     on_pid=on_pid,
+                    mode=mode,
                 )
 
                 if cancel_check():

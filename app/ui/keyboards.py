@@ -40,15 +40,65 @@ def link_failure_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ Back", callback_data="nav_main")],
     ])
 
-def narration_method_keyboard(job_id: str, has_caption: bool = False) -> InlineKeyboardMarkup:
+def mode_choice_keyboard(job_id: str, has_caption: bool = False) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="🌐 បកប្រែសំឡេងវីដេអូ (AI Auto-Translate)", callback_data=f"act_trans:{job_id}")],
-        [InlineKeyboardButton(text="✍️ វាយអត្ថបទដោយខ្លួនឯង (Manual Text)", callback_data=f"act_text:{job_id}")],
+        [InlineKeyboardButton(text="🎙️ Narration ថ្មី (Free Narration)", callback_data=f"mode_free:{job_id}")],
+        [InlineKeyboardButton(text="🌐 បកប្រែតាមពេលវីដេអូដើម (Source-Timed Dubbing)", callback_data=f"mode_dub:{job_id}")],
     ]
     if has_caption:
         rows.append([InlineKeyboardButton(text="📝 ប្រើ Caption នៃវីដេអូ", callback_data="caption_use")])
-    rows.append([InlineKeyboardButton(text="❌ បោះបង់", callback_data=f"job_cancel:{job_id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Back", callback_data="nav_source")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def narration_method_keyboard(job_id: str, has_caption: bool = False) -> InlineKeyboardMarkup:
+    return mode_choice_keyboard(job_id, has_caption=has_caption)
+
+def dubbing_review_keyboard(
+    job_id: str,
+    revision_id: int,
+    page: int,
+    total_pages: int,
+    segments_on_page: list[tuple[str, str]], # [(segment_id, label)]
+) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="✅ ប្រើអត្ថបទបកប្រែនេះ", callback_data=f"d_proc:{job_id}:{revision_id}")],
+    ]
+
+    # Edit buttons for segments visible on current page
+    edit_btns = [
+        InlineKeyboardButton(text=f"✏️ កែ {seg_id}", callback_data=f"d_ed:{job_id}:{revision_id}:{seg_id}")
+        for seg_id, _ in segments_on_page
+    ]
+    if edit_btns:
+        rows.append(edit_btns)
+
+    # Pagination row
+    if total_pages > 1:
+        nav_row = []
+        if page > 1:
+            nav_row.append(InlineKeyboardButton(text="◀️ ថយ", callback_data=f"d_p:{job_id}:{revision_id}:{page - 1}"))
+        nav_row.append(InlineKeyboardButton(text=f"ទំព័រ {page}/{total_pages}", callback_data="noop"))
+        if page < total_pages:
+            nav_row.append(InlineKeyboardButton(text="បន្ទាប់ ▶️", callback_data=f"d_p:{job_id}:{revision_id}:{page + 1}"))
+        rows.append(nav_row)
+
+    rows.append([
+        InlineKeyboardButton(text="🎙️ ជ្រើសសំឡេង", callback_data=f"edit_voice:{job_id}:{revision_id}"),
+        InlineKeyboardButton(text="📊 មើលការតម្រឹម", callback_data=f"d_rep:{job_id}:{revision_id}"),
+    ])
+    rows.append([
+        InlineKeyboardButton(text="🔄 បកប្រែឡើងវិញ", callback_data=f"mode_dub:{job_id}"),
+        InlineKeyboardButton(text="❌ បោះបង់", callback_data=f"job_cancel:{job_id}"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def dubbing_fit_resolution_keyboard(job_id: str, revision_id: int, segment_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ កែឃ្លានេះ (Edit Segment)", callback_data=f"d_ed:{job_id}:{revision_id}:{segment_id}")],
+        [InlineKeyboardButton(text="🔄 សាកល្បងម្ដងទៀត (Regenerate)", callback_data=f"d_proc:{job_id}:{revision_id}")],
+        [InlineKeyboardButton(text="⬅️ ត្រឡប់ទៅពិនិត្យឡើងវិញ", callback_data=f"d_p:{job_id}:{revision_id}:1")],
+        [InlineKeyboardButton(text="❌ បោះបង់", callback_data=f"job_cancel:{job_id}")],
+    ])
 
 def translation_review_keyboard(job_id: str, revision_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
