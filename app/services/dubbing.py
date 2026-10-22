@@ -93,6 +93,7 @@ async def synthesize_and_fit_plan(
                 wav_path=raw_wav,
                 sample_rate=plan.sample_rate,
                 channels=2,
+                trim_silence=True,
             )
 
         clip = DubClip(

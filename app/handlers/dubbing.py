@@ -271,7 +271,7 @@ async def handle_segment_edit_text(message: Message, state: FSMContext) -> None:
     )
 
 @router.callback_query(F.data.startswith("d_proc:"))
-async def cb_dubbing_proceed(call: CallbackQuery, state: FSMContext) -> None:
+async def cb_dubbing_proceed(call: CallbackQuery, state: FSMContext | None = None) -> None:
     _, job_id, rev_str = call.data.split(":")
     revision_id = int(rev_str)
 
@@ -404,7 +404,7 @@ async def cb_dubbing_report(call: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("d_sh:"))
-async def cb_dubbing_shorten_single_segment(call: CallbackQuery) -> None:
+async def cb_dubbing_shorten_single_segment(call: CallbackQuery, state: FSMContext | None = None) -> None:
     parts = call.data.split(":")
     if len(parts) != 4:
         await call.answer(texts.INVALID_ACTION, show_alert=True)
@@ -448,11 +448,11 @@ async def cb_dubbing_shorten_single_segment(call: CallbackQuery) -> None:
     save_dubbing_plan(job_id, revision_id, plan)
 
     invalidate_segment_tts(job_id, revision_id, segment_id)
-    await cb_dubbing_proceed(call)
+    await cb_dubbing_proceed(call, state=state)
 
 
 @router.callback_query(F.data.startswith("d_sha:"))
-async def cb_dubbing_shorten_all_overlong_segments(call: CallbackQuery) -> None:
+async def cb_dubbing_shorten_all_overlong_segments(call: CallbackQuery, state: FSMContext | None = None) -> None:
     parts = call.data.split(":")
     if len(parts) != 3:
         await call.answer(texts.INVALID_ACTION, show_alert=True)
@@ -505,4 +505,4 @@ async def cb_dubbing_shorten_all_overlong_segments(call: CallbackQuery) -> None:
             invalidate_segment_tts(job_id, revision_id, sid)
 
     save_dubbing_plan(job_id, revision_id, plan)
-    await cb_dubbing_proceed(call)
+    await cb_dubbing_proceed(call, state=state)

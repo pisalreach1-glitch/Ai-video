@@ -27,8 +27,9 @@ async def decode_mp3_to_wav(
     wav_path: Path | str,
     sample_rate: int = 48000,
     channels: int = 2,
+    trim_silence: bool = False,
 ) -> Path:
-    """Decode any audio format to standardized 16-bit PCM stereo WAV."""
+    """Decode any audio format to standardized 16-bit PCM stereo WAV, optionally trimming TTS silence padding."""
     dest = Path(wav_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -43,6 +44,27 @@ async def decode_mp3_to_wav(
     res = await run_process(cmd, timeout=30.0)
     if res.returncode != 0 or not dest.exists():
         raise RuntimeError(f"Failed to decode audio to WAV: {res.stderr[:200]}")
+
+    if trim_silence and dest.exists():
+        trimmed_dest = dest.with_suffix(".trimmed.wav")
+        trim_cmd = [
+            config.ffmpeg_path,
+            "-y",
+            "-i", str(dest),
+            "-af", "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.03,areverse,silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.03,areverse",
+            "-acodec", "pcm_s16le",
+            "-ar", str(sample_rate),
+            "-ac", str(channels),
+            str(trimmed_dest),
+        ]
+        trim_res = await run_process(trim_cmd, timeout=15.0)
+        if trim_res.returncode == 0 and trimmed_dest.exists():
+            trimmed_ms = measure_wav_duration_ms(trimmed_dest)
+            if trimmed_ms >= 100:
+                trimmed_dest.replace(dest)
+            else:
+                trimmed_dest.unlink(missing_ok=True)
+
     return dest
 
 async def apply_atempo(
