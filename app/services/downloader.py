@@ -323,92 +323,196 @@ async def resolve_douyin_canonical(url: str, timeout_seconds: int = 15) -> tuple
     return current_url, None
 
 async def try_download_douyin_direct(
-    aweme_id: str,
+    url: str,
+    canonical_url: str,
+    aweme_id: str | None,
     destination_path: Path | str,
     max_bytes: int,
     timeout_seconds: int = 60,
     cancel_check: Callable[[], bool] | None = None,
 ) -> bool:
     """
-    Attempt to extract direct CDN video stream from Douyin mobile web SSR data.
-    If successful, bypasses desktop JS/anti-bot checks and downloads clean MP4.
+    Multi-strategy direct Douyin video parser & stream downloader.
+    Uses the user's proven multi-tier engine from their Douyin downloader project:
+    1. Universal Course & Protected Resolver (Suxun API - seamlessly handles monetized/protected videos)
+    2. Direct Mobile Aweme Feed API (snssdk / amemv)
+    3. Direct Aweme Play 302 Redirect Endpoint
+    4. Mobile Web SSR Parser (iesdouyin.com/share/video)
+    Bypasses JS challenges, anti-bot mechanisms, and monetized channel restrictions without requiring manual cookies.
     """
-    share_url = f"https://www.iesdouyin.com/share/video/{aweme_id}"
-    validate_public_url(share_url)
+    # Candidate URLs to try
+    candidate_targets = []
+    if url:
+        candidate_targets.append(url)
+    if canonical_url and canonical_url != url:
+        candidate_targets.append(canonical_url)
+    if aweme_id:
+        candidate_targets.append(f"https://www.douyin.com/video/{aweme_id}")
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
-            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
-        ),
-        "Referer": "https://www.iesdouyin.com/",
-    }
+    # =========================================================================
+    # Strategy 1: Universal Resolver Engine (bypasses protected/monetized channels)
+    # =========================================================================
+    for target in candidate_targets:
+        if cancel_check and cancel_check():
+            raise DownloadLimitError("Download cancelled by user.")
+        try:
+            resolver_url = f"https://api.suxun.site/api/douyin?url={urllib.parse.quote(target)}"
+            validate_public_url(resolver_url)
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10.0)) as session:
+                async with session.get(resolver_url) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        item_data = data.get("data")
+                        if isinstance(item_data, dict):
+                            v_url = item_data.get("url")
+                            if v_url and isinstance(v_url, str) and v_url.startswith(("http://", "https://")):
+                                success = await download_direct_url(
+                                    url=v_url,
+                                    destination_path=destination_path,
+                                    max_bytes=max_bytes,
+                                    timeout_seconds=timeout_seconds,
+                                    cancel_check=cancel_check,
+                                )
+                                if success and Path(destination_path).exists() and Path(destination_path).stat().st_size > 0:
+                                    logger.info(f"Successfully downloaded Douyin video via universal resolver for {target}")
+                                    return True
+        except Exception as e:
+            logger.debug(f"Universal resolver failed for {target}: {e}")
 
-    try:
-        client_timeout = aiohttp.ClientTimeout(total=float(timeout_seconds))
-        async with aiohttp.ClientSession(timeout=client_timeout) as session:
-            async with session.get(share_url, headers=headers) as resp:
-                if resp.status != 200:
-                    return False
-                html = await resp.text()
+    # =========================================================================
+    # Strategy 2: Official Mobile Feed Endpoints (ByteDance CDN)
+    # =========================================================================
+    if aweme_id:
+        feed_endpoints = [
+            f"https://aweme.snssdk.com/aweme/v1/feed/?aweme_id={aweme_id}",
+            f"https://api5-normal-c-hl.amemv.com/aweme/v1/feed/?aweme_id={aweme_id}",
+            f"https://api3-normal-c-hl.amemv.com/aweme/v1/feed/?aweme_id={aweme_id}",
+        ]
+        feed_headers = {
+            "User-Agent": (
+                "com.ss.android.ugc.aweme/330601 (Linux; U; Android 13; zh_CN; "
+                "Build/TQ3A.230901.001; Cronet/TTNetVersion:cf52e896 2024-04-18 QuicVersion:46e1e07b 2024-03-27)"
+            ),
+            "Accept": "application/json",
+        }
+        for ep in feed_endpoints:
+            if cancel_check and cancel_check():
+                raise DownloadLimitError("Download cancelled by user.")
+            try:
+                validate_public_url(ep)
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8.0)) as session:
+                    async with session.get(ep, headers=feed_headers) as r:
+                        if r.status == 200:
+                            data = await r.json()
+                            for item in data.get("aweme_list", []):
+                                if str(item.get("aweme_id")) == str(aweme_id):
+                                    play_list = item.get("video", {}).get("play_addr", {}).get("url_list", [])
+                                    if play_list:
+                                        clean_v = play_list[0].replace("playwm", "play")
+                                        success = await download_direct_url(
+                                            url=clean_v,
+                                            destination_path=destination_path,
+                                            max_bytes=max_bytes,
+                                            timeout_seconds=timeout_seconds,
+                                            cancel_check=cancel_check,
+                                        )
+                                        if success and Path(destination_path).exists() and Path(destination_path).stat().st_size > 0:
+                                            logger.info(f"Successfully downloaded Douyin video {aweme_id} via mobile feed API.")
+                                            return True
+            except Exception as e:
+                logger.debug(f"Feed endpoint {ep} failed: {e}")
 
-            # 1. Search for _ROUTER_DATA
-            stream_urls: list[str] = []
-            router_match = re.search(r'window\._ROUTER_DATA\s*=\s*(.+?)(?:;?\s*</script>|\n)', html)
-            if router_match:
-                try:
-                    data = json.loads(router_match.group(1).strip().rstrip(";"))
-                    loader_data = data.get("loaderData", {})
-                    for page_key, page_val in loader_data.items():
-                        if isinstance(page_val, dict) and "videoInfoRes" in page_val:
-                            info = page_val["videoInfoRes"]
-                            for item in info.get("item_list", []):
-                                play_addr = item.get("video", {}).get("play_addr", {})
-                                for u in play_addr.get("url_list", []):
-                                    if isinstance(u, str):
-                                        stream_urls.append(u)
-                except Exception:
-                    pass
+    # =========================================================================
+    # Strategy 3: Direct Aweme Play 302 Redirect Endpoint
+    # =========================================================================
+    if aweme_id:
+        if cancel_check and cancel_check():
+            raise DownloadLimitError("Download cancelled by user.")
+        try:
+            play_api = f"https://aweme.snssdk.com/aweme/v1/play/?video_id={aweme_id}&ratio=1080p&line=0"
+            validate_public_url(play_api)
+            play_headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
+                    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+                ),
+            }
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8.0)) as session:
+                async with session.get(play_api, headers=play_headers, allow_redirects=False) as r:
+                    loc = r.headers.get("Location")
+                    if loc:
+                        clean_loc = loc.replace("playwm", "play")
+                        success = await download_direct_url(
+                            url=clean_loc,
+                            destination_path=destination_path,
+                            max_bytes=max_bytes,
+                            timeout_seconds=timeout_seconds,
+                            cancel_check=cancel_check,
+                        )
+                        if success and Path(destination_path).exists() and Path(destination_path).stat().st_size > 0:
+                            logger.info(f"Successfully downloaded Douyin video {aweme_id} via play redirect endpoint.")
+                            return True
+        except Exception as e:
+            logger.debug(f"Play endpoint failed for {aweme_id}: {e}")
 
-            # 2. Search for direct playwm / play patterns in HTML
-            if not stream_urls:
-                raw_matches = re.findall(r'(https?:\\?/\\?/(?:aweme\.snssdk\.com|www\.douyin\.com)[^"\'\s<>]+)', html)
-                for rm in raw_matches:
-                    clean_u = rm.replace(r"\/", "/")
-                    if "play" in clean_u:
-                        stream_urls.append(clean_u)
+    # =========================================================================
+    # Strategy 4: Mobile Web SSR Parser (iesdouyin.com/share/video)
+    # =========================================================================
+    if aweme_id:
+        if cancel_check and cancel_check():
+            raise DownloadLimitError("Download cancelled by user.")
+        share_url = f"https://www.iesdouyin.com/share/video/{aweme_id}"
+        validate_public_url(share_url)
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+            ),
+            "Referer": "https://www.iesdouyin.com/",
+        }
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10.0)) as session:
+                async with session.get(share_url, headers=headers) as resp:
+                    if resp.status == 200:
+                        html = await resp.text()
+                        stream_urls: list[str] = []
+                        router_match = re.search(r'window\._ROUTER_DATA\s*=\s*(.+?)(?:;?\s*</script>|\n)', html)
+                        if router_match:
+                            try:
+                                data = json.loads(router_match.group(1).strip().rstrip(";"))
+                                loader_data = data.get("loaderData", {})
+                                for _, page_val in loader_data.items():
+                                    if isinstance(page_val, dict) and "videoInfoRes" in page_val:
+                                        info = page_val["videoInfoRes"]
+                                        for item in info.get("item_list", []):
+                                            play_addr = item.get("video", {}).get("play_addr", {})
+                                            for u in play_addr.get("url_list", []):
+                                                if isinstance(u, str):
+                                                    stream_urls.append(u)
+                            except Exception:
+                                pass
 
-            if not stream_urls:
-                return False
+                        if not stream_urls:
+                            raw_matches = re.findall(r'(https?:\\?/\\?/(?:aweme\.snssdk\.com|www\.douyin\.com)[^"\'\s<>]+)', html)
+                            for rm in raw_matches:
+                                clean_u = rm.replace(r"\/", "/")
+                                if "play" in clean_u:
+                                    stream_urls.append(clean_u)
 
-            # Try candidate stream URLs, preferring watermark-free ("play" instead of "playwm")
-            for candidate in stream_urls:
-                clean_candidate = candidate.replace("playwm", "play")
-                stream_success = await download_direct_url(
-                    url=clean_candidate,
-                    destination_path=destination_path,
-                    max_bytes=max_bytes,
-                    timeout_seconds=timeout_seconds,
-                    cancel_check=cancel_check,
-                )
-                if stream_success and Path(destination_path).exists() and Path(destination_path).stat().st_size > 0:
-                    logger.info(f"Successfully downloaded Douyin video {aweme_id} via direct mobile stream.")
-                    return True
-
-                if clean_candidate != candidate:
-                    stream_success = await download_direct_url(
-                        url=candidate,
-                        destination_path=destination_path,
-                        max_bytes=max_bytes,
-                        timeout_seconds=timeout_seconds,
-                        cancel_check=cancel_check,
-                    )
-                    if stream_success and Path(destination_path).exists() and Path(destination_path).stat().st_size > 0:
-                        logger.info(f"Successfully downloaded Douyin video {aweme_id} via fallback stream.")
-                        return True
-
-    except Exception as e:
-        logger.debug(f"Direct Douyin extraction failed for {aweme_id}: {e}")
+                        for candidate in stream_urls:
+                            clean_candidate = candidate.replace("playwm", "play")
+                            success = await download_direct_url(
+                                url=clean_candidate,
+                                destination_path=destination_path,
+                                max_bytes=max_bytes,
+                                timeout_seconds=timeout_seconds,
+                                cancel_check=cancel_check,
+                            )
+                            if success and Path(destination_path).exists() and Path(destination_path).stat().st_size > 0:
+                                logger.info(f"Successfully downloaded Douyin video {aweme_id} via SSR parser.")
+                                return True
+        except Exception as e:
+            logger.debug(f"Direct Douyin SSR extraction failed for {aweme_id}: {e}")
 
     return False
 
@@ -557,16 +661,17 @@ async def download_media(
         canonical_url, aweme_id = await resolve_douyin_canonical(url, timeout_seconds=timeout)
         target_url = canonical_url
 
-        if aweme_id:
-            direct_douyin = await try_download_douyin_direct(
-                aweme_id=aweme_id,
-                destination_path=dest,
-                max_bytes=max_bytes,
-                timeout_seconds=timeout,
-                cancel_check=cancel_check,
-            )
-            if direct_douyin and dest.exists() and dest.stat().st_size > 0:
-                return dest
+        direct_douyin = await try_download_douyin_direct(
+            url=url,
+            canonical_url=canonical_url,
+            aweme_id=aweme_id,
+            destination_path=dest,
+            max_bytes=max_bytes,
+            timeout_seconds=timeout,
+            cancel_check=cancel_check,
+        )
+        if direct_douyin and dest.exists() and dest.stat().st_size > 0:
+            return dest
 
     # 1. Try direct stream
     direct_success = await download_direct_url(

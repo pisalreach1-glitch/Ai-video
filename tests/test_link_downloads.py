@@ -210,3 +210,68 @@ def test_extract_url_from_douyin_share_text():
     url = match.group(0).rstrip("，。；！？）)》>\"'")
     assert url == "https://v.douyin.com/iL29jB8/"
 
+@pytest.mark.asyncio
+async def test_try_download_douyin_direct_resolver(tmp_path, monkeypatch):
+    """Verify that Douyin universal resolver successfully streams media without cookies."""
+    from app.services.downloader import try_download_douyin_direct
+    dest = tmp_path / "douyin_out.mp4"
+
+    class MockResolverResp:
+        status = 200
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            pass
+        async def json(self):
+            return {"code": 200, "data": {"url": "https://example.com/stream.mp4"}}
+
+    class MockStreamResp:
+        status = 200
+        headers = {"Content-Type": "video/mp4"}
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            pass
+        @property
+        def content(self):
+            class Content:
+                def iter_chunked(self, size):
+                    class AsyncIter:
+                        def __init__(self):
+                            self.done = False
+                        def __aiter__(self):
+                            return self
+                        async def __anext__(self):
+                            if self.done:
+                                raise StopAsyncIteration
+                            self.done = True
+                            return b"fake_mp4_bytes"
+                    return AsyncIter()
+            return Content()
+
+    class MockSession:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            pass
+        def get(self, url, **kwargs):
+            if "suxun.site" in url:
+                return MockResolverResp()
+            return MockStreamResp()
+
+    monkeypatch.setattr("aiohttp.ClientSession", MockSession)
+
+    success = await try_download_douyin_direct(
+        url="https://v.douyin.com/6wNQ9uM7eGI/",
+        canonical_url="https://www.douyin.com/video/7189183796351143226",
+        aweme_id="7189183796351143226",
+        destination_path=dest,
+        max_bytes=10*1024*1024,
+    )
+    assert success is True
+    assert dest.exists()
+    assert dest.read_bytes() == b"fake_mp4_bytes"
+
+
