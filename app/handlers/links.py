@@ -1,4 +1,4 @@
-"""Video URL input and download handlers."""
+import re
 import logging
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
@@ -35,9 +35,22 @@ async def cb_source_link(call: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(WizardStep.awaiting_url_input)
     await safe_edit_message(call, texts.LINK_PROMPT, reply_markup=source_choice_keyboard())
 
-@router.message(WizardStep.awaiting_url_input, F.text.regexp(r"^https?://\S+"))
+@router.message(WizardStep.awaiting_url_input, F.text)
 async def handle_url_input(message: Message, state: FSMContext) -> None:
-    url = message.text.strip()
+    raw_text = (message.text or "").strip()
+
+    # Extract HTTP/HTTPS URL anywhere from the message (supports raw link or Douyin/TikTok share text)
+    url_match = re.search(r"https?://[^\s<>\"\'\u4e00-\u9fff\u1780-\u17ff]+", raw_text)
+    if not url_match:
+        await message.reply(
+            "⚠️ មិនបានរកឃើញ Link ត្រឹមត្រូវនៅក្នុងសាររបស់អ្នកឡើយ。\n\n"
+            "សូមផ្ញើ Link វីដេអូដែលមាន `https://...` (ឧទាហរណ៍៖ TikTok, Douyin, YouTube, Facebook, ឬ Link ផ្ទាល់)។\n"
+            "💡 ចំពោះ Douyin អ្នកអាច Copy អត្ថបទចែករំលែកពីក្នុង App Douyin មក Paste បាន។",
+            reply_markup=source_choice_keyboard(),
+        )
+        return
+
+    url = url_match.group(0).rstrip("，。；！？）)》>\"'")
     data = await state.get_data()
     user_id = message.from_user.id
     chat_id = message.chat.id

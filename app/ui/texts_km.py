@@ -53,8 +53,9 @@ CAPTION_CONFIRM_PROMPT = (
 )
 
 LINK_PROMPT = (
-    "🔗 **សូមផ្ញើលីងវីដេអូសាធារណៈ (Public Video URL)**\n\n"
-    "ឧទាហរណ៍៖ លីងផ្ទាល់ MP4 ឬលីងពីបណ្ដាញសង្គមដែលគាំទ្រ (TikTok, YouTube, Facebook...)\n\n"
+    "🔗 **សូមផ្ញើលីងវីដេអូសាធារណៈ (Public Video URL)៖**\n\n"
+    "ឧទាហរណ៍៖ លីងផ្ទាល់ MP4 ឬលីងពីបណ្ដាញសង្គមដែលគាំទ្រ (TikTok, Douyin, YouTube, Facebook...)\n\n"
+    "💡 *សម្រាប់ Douyin៖ លោកអ្នកអាច Copy អត្ថបទចែករំលែកទាំងមូលពីក្នុង App Douyin មក Paste ផ្ញើបានភ្លាមៗ!*\n\n"
     "⚠️ *សម្គាល់៖ Bot មិនគាំទ្រលីងដែលមានការកំណត់សិទ្ធិឯកជន (Private/DRM/Paywall) ឡើយ។*"
 )
 

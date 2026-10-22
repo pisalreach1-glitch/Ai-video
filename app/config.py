@@ -33,6 +33,8 @@ class Settings:
     translation_provider: str = "gemini"
     telegram_api_id: int | None = None
     telegram_api_hash: str | None = None
+    douyin_cookie: str | None = None
+    ytdlp_cookiefile: Path | None = None
 
 def _find_binary(name: str, explicit_path: str | None = None) -> str:
     """Locate binary path or raise error."""
@@ -109,6 +111,12 @@ def load_settings() -> Settings:
         translation_provider=os.getenv("TRANSLATION_PROVIDER", "gemini" if os.getenv("GEMINI_API_KEY") else "manual"),
         telegram_api_id=int(os.getenv("TELEGRAM_API_ID").strip()) if os.getenv("TELEGRAM_API_ID") and os.getenv("TELEGRAM_API_ID").strip().isdigit() else None,
         telegram_api_hash=os.getenv("TELEGRAM_API_HASH", "").strip() or None,
+        douyin_cookie=os.getenv("DOUYIN_COOKIE", "").strip() or None,
+        ytdlp_cookiefile=(
+            Path(os.getenv("YTDLP_COOKIEFILE").strip()).resolve()
+            if os.getenv("YTDLP_COOKIEFILE") and Path(os.getenv("YTDLP_COOKIEFILE").strip()).exists()
+            else (Path("cookies.txt").resolve() if Path("cookies.txt").exists() else None)
+        ),
     )
 
 config = load_settings()
