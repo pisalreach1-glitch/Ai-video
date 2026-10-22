@@ -26,9 +26,15 @@ def test_dubbing_all_callbacks_within_64_bytes():
             cb_bytes = len(btn.callback_data.encode("utf-8"))
             assert cb_bytes <= 64, f"Callback exceeds 64 bytes: {btn.callback_data} ({cb_bytes}b)"
 
-    # 3. Fit resolution keyboard
-    kb3 = dubbing_fit_resolution_keyboard(job_id, revision_id, segment_id="s001")
+    # 3. Fit resolution keyboard (single and multiple overlong clips)
+    kb3 = dubbing_fit_resolution_keyboard(job_id, revision_id, segment_id="s001", overlong_count=1)
     for row in kb3.inline_keyboard:
+        for btn in row:
+            cb_bytes = len(btn.callback_data.encode("utf-8"))
+            assert cb_bytes <= 64, f"Callback exceeds 64 bytes: {btn.callback_data} ({cb_bytes}b)"
+
+    kb4 = dubbing_fit_resolution_keyboard(job_id, revision_id, segment_id="s001", overlong_count=10)
+    for row in kb4.inline_keyboard:
         for btn in row:
             cb_bytes = len(btn.callback_data.encode("utf-8"))
             assert cb_bytes <= 64, f"Callback exceeds 64 bytes: {btn.callback_data} ({cb_bytes}b)"

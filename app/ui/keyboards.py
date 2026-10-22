@@ -92,13 +92,26 @@ def dubbing_review_keyboard(
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def dubbing_fit_resolution_keyboard(job_id: str, revision_id: int, segment_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+def dubbing_fit_resolution_keyboard(
+    job_id: str,
+    revision_id: int,
+    segment_id: str,
+    overlong_count: int = 1,
+) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="🤖 សង្ខេបឃ្លានេះដោយ AI", callback_data=f"d_sh:{job_id}:{revision_id}:{segment_id}")],
+    ]
+    if overlong_count > 1:
+        rows.append([
+            InlineKeyboardButton(text=f"⚡ សង្ខេបឃ្លាវែងទាំង {overlong_count} ដោយ AI", callback_data=f"d_sha:{job_id}:{revision_id}")
+        ])
+    rows.extend([
         [InlineKeyboardButton(text="✏️ កែឃ្លានេះ (Edit Segment)", callback_data=f"d_ed:{job_id}:{revision_id}:{segment_id}")],
         [InlineKeyboardButton(text="🔄 សាកល្បងម្ដងទៀត (Regenerate)", callback_data=f"d_proc:{job_id}:{revision_id}")],
         [InlineKeyboardButton(text="⬅️ ត្រឡប់ទៅពិនិត្យឡើងវិញ", callback_data=f"d_p:{job_id}:{revision_id}:1")],
         [InlineKeyboardButton(text="❌ បោះបង់", callback_data=f"job_cancel:{job_id}")],
     ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def translation_review_keyboard(job_id: str, revision_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[

@@ -35,7 +35,7 @@ async def synthesize_and_fit_plan(
     voice = settings.voice
     speed = settings.speed
 
-    for t_seg in plan.translations:
+    for i, t_seg in enumerate(plan.translations):
         if cancel_check and cancel_check():
             raise RuntimeError("Synthesis cancelled.")
 
@@ -104,12 +104,20 @@ async def synthesize_and_fit_plan(
             status="pending",
         )
 
-        # Run duration fitting against source slot
+        # Calculate available window before the next utterance starts (preventing collisions)
+        next_s_seg = plan.segments[i + 1] if i + 1 < len(plan.segments) else None
+        if next_s_seg and next_s_seg.start_ms > s_seg.start_ms:
+            avail_ms = next_s_seg.start_ms - s_seg.start_ms
+        else:
+            avail_ms = max(s_seg.duration_ms, plan.source_duration_ms - s_seg.start_ms)
+
+        # Run duration fitting against source slot and available gap
         fitted_clip = await fit_clip(
             clip=clip,
             source_segment=s_seg,
             max_tempo=config.dub_max_tempo,
             sample_rate=plan.sample_rate,
+            available_slot_ms=avail_ms,
         )
 
         plan.clips.append(fitted_clip)
@@ -120,7 +128,7 @@ async def synthesize_and_fit_plan(
                 issue_type="too_long",
                 message=(
                     f"ឃ្លា {t_seg.segment_id} មានប្រវែង {fitted_clip.raw_duration_ms}ms "
-                    f"ដែលលើសពីពេលវេលា {s_seg.duration_ms}ms ក្នុងវីដេអូដើម។"
+                    f"ដែលលើសពីពេលវេលា {avail_ms}ms ក្នុងវីដេអូដើម។"
                 ),
                 severity="blocking",
             ))

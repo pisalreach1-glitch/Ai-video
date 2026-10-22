@@ -24,11 +24,21 @@ from app.ui.keyboards import (
     dubbing_fit_resolution_keyboard,
     video_preview_review_keyboard,
 )
+from app.services.segment_translation import (
+    shorten_single_segment_khmer,
+    shorten_overlong_segments,
+)
 
 logger = logging.getLogger(__name__)
 router = Router(name="dubbing")
 
 SEGMENTS_PER_PAGE = 3
+
+def invalidate_segment_tts(job_id: str, revision_id: int, segment_id: str) -> None:
+    workspace.get_segment_voice_mp3(job_id, revision_id, segment_id).unlink(missing_ok=True)
+    workspace.get_segment_voice_wav(job_id, revision_id, segment_id).unlink(missing_ok=True)
+    workspace.get_segment_fitted_wav(job_id, revision_id, segment_id).unlink(missing_ok=True)
+    workspace.get_segment_tts_events_path(job_id, revision_id, segment_id).unlink(missing_ok=True)
 
 async def render_segment_review_page(
     call: CallbackQuery,
@@ -217,15 +227,7 @@ async def handle_segment_edit_text(message: Message, state: FSMContext) -> None:
         ))
 
     # Invalidate cached TTS audio for this segment
-    seg_dir = workspace.get_segment_dir(job_id, revision_id, segment_id)
-    raw_mp3 = workspace.get_segment_voice_mp3(job_id, revision_id, segment_id)
-    raw_wav = workspace.get_segment_voice_wav(job_id, revision_id, segment_id)
-    fitted_wav = workspace.get_segment_fitted_wav(job_id, revision_id, segment_id)
-    events_json = workspace.get_segment_tts_events_path(job_id, revision_id, segment_id)
-    raw_mp3.unlink(missing_ok=True)
-    raw_wav.unlink(missing_ok=True)
-    fitted_wav.unlink(missing_ok=True)
-    events_json.unlink(missing_ok=True)
+    invalidate_segment_tts(job_id, revision_id, segment_id)
 
     save_dubbing_plan(job_id, revision_id, plan)
 
@@ -307,6 +309,10 @@ async def cb_dubbing_proceed(call: CallbackQuery, state: FSMContext) -> None:
             s_seg = plan.get_segment(first_overlong.segment_id)
             t_seg = plan.get_translation(first_overlong.segment_id)
 
+            first_idx = next((i for i, s in enumerate(plan.segments) if s.segment_id == first_overlong.segment_id), 0)
+            next_s = plan.segments[first_idx + 1] if first_idx + 1 < len(plan.segments) else None
+            slot_s = ((next_s.start_ms - s_seg.start_ms) if next_s else (plan.source_duration_ms - s_seg.start_ms)) / 1000.0 if s_seg else 0.0
+
             job_storage.set_job_status(job_id, JobState.AWAITING_FIT_RESOLUTION, stage="awaiting_fit_resolution")
             await safe_edit_message(
                 call,
@@ -314,13 +320,14 @@ async def cb_dubbing_proceed(call: CallbackQuery, state: FSMContext) -> None:
                     max_tempo=config.dub_max_tempo,
                     segment_id=first_overlong.segment_id,
                     actual_dur=first_overlong.raw_duration_ms / 1000.0,
-                    slot_dur=(s_seg.duration_ms / 1000.0) if s_seg else 0.0,
+                    slot_dur=slot_s,
                     text=t_seg.translated_text if t_seg else "",
                 ),
                 reply_markup=dubbing_fit_resolution_keyboard(
                     job_id=job_id,
                     revision_id=revision_id,
                     segment_id=first_overlong.segment_id,
+                    overlong_count=len(too_long_clips),
                 ),
             )
             return
@@ -394,3 +401,108 @@ async def cb_dubbing_report(call: CallbackQuery) -> None:
 
     await call.message.reply(report_text)
     await call.answer()
+
+
+@router.callback_query(F.data.startswith("d_sh:"))
+async def cb_dubbing_shorten_single_segment(call: CallbackQuery) -> None:
+    parts = call.data.split(":")
+    if len(parts) != 4:
+        await call.answer(texts.INVALID_ACTION, show_alert=True)
+        return
+    job_id, rev_str, segment_id = parts[1], parts[2], parts[3]
+    revision_id = int(rev_str)
+
+    if not await verify_callback_job(call, job_id, expected_rev=revision_id):
+        return
+
+    await call.answer("⏳ កំពុងសង្ខេបឃ្លាដោយ AI...")
+    plan = load_dubbing_plan(job_id, revision_id)
+    if not plan:
+        await call.answer(texts.INVALID_ACTION, show_alert=True)
+        return
+
+    s_seg = plan.get_segment(segment_id)
+    t_seg = plan.get_translation(segment_id)
+    if not s_seg or not t_seg:
+        await call.answer("មិនអាចរកឃើញឃ្លានេះឡើយ។", show_alert=True)
+        return
+
+    seg_idx = next((i for i, s in enumerate(plan.segments) if s.segment_id == segment_id), 0)
+    next_s = plan.segments[seg_idx + 1] if seg_idx + 1 < len(plan.segments) else None
+    avail_ms = (next_s.start_ms - s_seg.start_ms) if next_s else (plan.source_duration_ms - s_seg.start_ms)
+    avail_s = max(avail_ms / 1000.0, 1.0)
+
+    try:
+        shortened = await shorten_single_segment_khmer(
+            source_text=s_seg.source_text,
+            current_khmer=t_seg.translated_text,
+            target_duration_s=avail_s,
+        )
+    except Exception as e:
+        logger.error(f"Failed to shorten segment {segment_id}: {e}")
+        await call.answer(f"បរាជ័យក្នុងការសង្ខេប: {e}", show_alert=True)
+        return
+
+    t_seg.translated_text = shortened
+    t_seg.status = "ready"
+    save_dubbing_plan(job_id, revision_id, plan)
+
+    invalidate_segment_tts(job_id, revision_id, segment_id)
+    await cb_dubbing_proceed(call)
+
+
+@router.callback_query(F.data.startswith("d_sha:"))
+async def cb_dubbing_shorten_all_overlong_segments(call: CallbackQuery) -> None:
+    parts = call.data.split(":")
+    if len(parts) != 3:
+        await call.answer(texts.INVALID_ACTION, show_alert=True)
+        return
+    job_id, rev_str = parts[1], parts[2]
+    revision_id = int(rev_str)
+
+    if not await verify_callback_job(call, job_id, expected_rev=revision_id):
+        return
+
+    await call.answer("⏳ កំពុងសង្ខេបឃ្លាវែងទាំងអស់ដោយ AI...")
+    plan = load_dubbing_plan(job_id, revision_id)
+    if not plan:
+        await call.answer(texts.INVALID_ACTION, show_alert=True)
+        return
+
+    too_long_ids = {c.segment_id for c in plan.clips if c.status == "too_long"}
+    if not too_long_ids:
+        await cb_dubbing_proceed(call)
+        return
+
+    items_to_shorten = []
+    for i, s_seg in enumerate(plan.segments):
+        if s_seg.segment_id in too_long_ids:
+            t_seg = plan.get_translation(s_seg.segment_id)
+            if not t_seg:
+                continue
+            next_s = plan.segments[i + 1] if i + 1 < len(plan.segments) else None
+            avail_ms = (next_s.start_ms - s_seg.start_ms) if next_s else (plan.source_duration_ms - s_seg.start_ms)
+            avail_s = max(avail_ms / 1000.0, 1.0)
+            items_to_shorten.append({
+                "id": s_seg.segment_id,
+                "source_text": s_seg.source_text,
+                "current_khmer": t_seg.translated_text,
+                "target_seconds": round(avail_s, 2),
+            })
+
+    try:
+        shortened_map = await shorten_overlong_segments(items_to_shorten)
+    except Exception as e:
+        logger.error(f"Failed to batch shorten overlong segments: {e}")
+        await call.answer(f"បរាជ័យក្នុងការសង្ខេប: {e}", show_alert=True)
+        return
+
+    for sid, new_text in shortened_map.items():
+        t = plan.get_translation(sid)
+        if t and new_text:
+            t.translated_text = new_text
+            t.status = "ready"
+            invalidate_segment_tts(job_id, revision_id, sid)
+
+    save_dubbing_plan(job_id, revision_id, plan)
+    await cb_dubbing_proceed(call)

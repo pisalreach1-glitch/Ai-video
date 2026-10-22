@@ -121,9 +121,12 @@ async def _translate_single_batch_gemini(
     )
 
     def _call_gemini() -> tuple[str, Any]:
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=1)),
+        )
         preferred = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
-        candidate_models = [preferred, "gemini-3.5-flash", "gemini-2.5-flash", "gemini-flash-latest"]
+        candidate_models = [preferred, "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash"]
         seen = set()
         models_to_try = [m for m in candidate_models if not (m in seen or seen.add(m))]
 
@@ -242,4 +245,159 @@ async def translate_segments(
             translation_provider="manual",
             status="needs_review",
         ))
+    return results
+
+
+async def shorten_single_segment_khmer(
+    source_text: str,
+    current_khmer: str,
+    target_duration_s: float,
+    cancel_check: Callable[[], bool] | None = None,
+) -> str:
+    """Shortens a single overlong translation into a concise natural Khmer phrase that fits target_duration_s."""
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        return current_khmer
+
+    from google import genai
+    from google.genai import types
+
+    prompt = (
+        "You are an expert Khmer dubbing translator and voiceover editor.\n"
+        "A video segment is currently too long to read and collides with the next speaker.\n"
+        "Shorten the Khmer translation into a very concise, punchy, natural spoken Khmer phrase (2 to 5 words max) "
+        f"that conveys the essential meaning and can be comfortably spoken in under {target_duration_s:.1f} seconds.\n\n"
+        f"Context:\n"
+        f"- Original source speech: {source_text}\n"
+        f"- Current Khmer translation: {current_khmer}\n"
+        f"- Maximum target duration: {target_duration_s:.1f}s\n\n"
+        "CRITICAL RULES:\n"
+        "1. Respond ONLY with the shortened Khmer text in UTF-8.\n"
+        "2. Do NOT include markdown, quotes, explanations, or any language other than Khmer."
+    )
+
+    def _call():
+        client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=1)),
+        )
+        preferred = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
+        candidate_models = [preferred, "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash"]
+        seen = set()
+        models_to_try = [m for m in candidate_models if not (m in seen or seen.add(m))]
+
+        for model_name in models_to_try:
+            try:
+                res = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(temperature=0.2),
+                )
+                text = (res.text or "").strip()
+                text = text.strip('\"\'`«» \n\r\t')
+                if text:
+                    return unicodedata.normalize("NFC", text)
+            except Exception as e:
+                logger.warning(f"Shortening model {model_name} failed: {e}. Trying fallback...")
+                continue
+        return current_khmer
+
+    if cancel_check and cancel_check():
+        raise RuntimeError("Cancelled.")
+
+    shortened = await asyncio.to_thread(_call)
+    return shortened or current_khmer
+
+
+async def shorten_overlong_segments(
+    overlong_items: list[dict[str, Any]],
+    cancel_check: Callable[[], bool] | None = None,
+) -> dict[str, str]:
+    """
+    Batches overlong segments to Gemini to shorten them all in chunks.
+    overlong_items: list of dicts with keys: 'id', 'source_text', 'current_khmer', 'target_seconds'
+    Returns: dict mapping segment_id -> shortened_khmer_text
+    """
+    if not overlong_items:
+        return {}
+
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        return {}
+
+    from google import genai
+    from google.genai import types
+    from pydantic import BaseModel
+
+    class ShortenItem(BaseModel):
+        id: str
+        shortened_text: str
+
+    class ShortenBatchSchema(BaseModel):
+        segments: list[ShortenItem]
+
+    BATCH_SIZE = 25
+    results: dict[str, str] = {}
+
+    for i in range(0, len(overlong_items), BATCH_SIZE):
+        if cancel_check and cancel_check():
+            raise RuntimeError("Cancelled.")
+
+        batch = overlong_items[i:i + BATCH_SIZE]
+        prompt = (
+            "You are an expert Khmer dubbing translator and voiceover editor.\n"
+            "Each of the following video segments is too long to speak in the allotted time slot and collides with the next sentence.\n"
+            "For each segment, produce a very concise, punchy, natural spoken Khmer phrase (2 to 5 words max) "
+            "that preserves the essential meaning and fits within the target seconds.\n\n"
+            "CRITICAL RULES:\n"
+            "1. Keep EXACTLY the same segment IDs ('id').\n"
+            "2. Provide only concise Khmer phrasing.\n\n"
+            f"{json.dumps(batch, ensure_ascii=False, indent=2)}"
+        )
+
+        def _call_batch():
+            client = genai.Client(
+                api_key=api_key,
+                http_options=types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=1)),
+            )
+            preferred = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
+            candidate_models = [preferred, "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash"]
+            seen = set()
+            models_to_try = [m for m in candidate_models if not (m in seen or seen.add(m))]
+
+            for model_name in models_to_try:
+                try:
+                    res = client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            temperature=0.2,
+                            response_mime_type="application/json",
+                            response_schema=ShortenBatchSchema,
+                        ),
+                    )
+                    parsed = getattr(res, "parsed", None)
+                    if parsed:
+                        return parsed
+                    raw = (res.text or "").strip()
+                    cleaned = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
+                    cleaned = re.sub(r"\s*```$", "", cleaned, flags=re.MULTILINE).strip()
+                    return json.loads(cleaned)
+                except Exception as e:
+                    logger.warning(f"Batch shorten model {model_name} failed: {e}. Trying fallback...")
+                    continue
+            return None
+
+        batch_result = await asyncio.to_thread(_call_batch)
+        if batch_result:
+            if hasattr(batch_result, "segments"):
+                for item in batch_result.segments:
+                    results[item.id] = unicodedata.normalize("NFC", item.shortened_text.strip())
+            elif isinstance(batch_result, dict) and "segments" in batch_result:
+                for item in batch_result["segments"]:
+                    sid = str(item.get("id", ""))
+                    stext = str(item.get("shortened_text", "")).strip()
+                    if sid and stext:
+                        results[sid] = unicodedata.normalize("NFC", stext)
+
     return results

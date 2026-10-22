@@ -1,4 +1,5 @@
 """Tests for segment-level translation, ID-preservation, and validation."""
+import asyncio
 import pytest
 from app.domain.dubbing import SourceSegment
 from app.services.segment_translation import (
@@ -105,3 +106,41 @@ async def test_gemini_translation_chunks_large_segment_counts(monkeypatch):
     assert call_batch_sizes == [35, 35, 10]
     assert results[0].translated_text == "Khmer s001"
     assert results[-1].translated_text == "Khmer s080"
+
+@pytest.mark.asyncio
+async def test_shorten_single_segment_khmer_no_key_returns_original(monkeypatch):
+    """When GEMINI_API_KEY is missing, shorten_single_segment_khmer returns the current Khmer text."""
+    from app.services.segment_translation import shorten_single_segment_khmer
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    res = await shorten_single_segment_khmer("Chinese text", "អត្ថបទខ្មែរវែង", target_duration_s=1.5)
+    assert res == "អត្ថបទខ្មែរវែង"
+
+@pytest.mark.asyncio
+async def test_shorten_overlong_segments_mapping(monkeypatch):
+    """Ensure shorten_overlong_segments correctly parses and maps shortened text."""
+    from app.services.segment_translation import shorten_overlong_segments
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key")
+
+    class DummyItem:
+        def __init__(self, id, text):
+            self.id = id
+            self.shortened_text = text
+
+    class DummyBatch:
+        def __init__(self, segments):
+            self.segments = segments
+
+    def mock_call():
+        return DummyBatch([
+            DummyItem("s001", "ផ្កាឈូកធំ"),
+            DummyItem("s002", "រៀបចំសំណង់"),
+        ])
+
+    monkeypatch.setattr("asyncio.to_thread", lambda fn: asyncio.sleep(0.01, result=mock_call()))
+
+    items = [
+        {"id": "s001", "source_text": "text1", "current_khmer": "long1", "target_seconds": 1.5},
+        {"id": "s002", "source_text": "text2", "current_khmer": "long2", "target_seconds": 2.0},
+    ]
+    res = await shorten_overlong_segments(items)
+    assert res == {"s001": "ផ្កាឈូកធំ", "s002": "រៀបចំសំណង់"}

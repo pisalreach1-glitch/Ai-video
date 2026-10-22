@@ -75,6 +75,7 @@ async def fit_clip(
     source_segment: SourceSegment,
     max_tempo: float = 1.15,
     sample_rate: int = 48000,
+    available_slot_ms: int | None = None,
 ) -> DubClip:
     """
     Measure decoded PCM duration against available slot.
@@ -90,7 +91,7 @@ async def fit_clip(
 
     raw_ms = measure_wav_duration_ms(raw_wav)
     clip.raw_duration_ms = raw_ms
-    slot_ms = source_segment.duration_ms
+    slot_ms = available_slot_ms if (available_slot_ms is not None and available_slot_ms > 0) else source_segment.duration_ms
 
     if slot_ms <= 0:
         clip.status = "too_long"
