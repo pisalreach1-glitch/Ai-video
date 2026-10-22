@@ -93,6 +93,28 @@ class WorkspaceManager:
     def get_sync_report_path(self, job_id: str, revision_id: int) -> Path:
         return self.get_revision_dir(job_id, revision_id) / "sync_report.json"
 
+    def get_speaker_sample_dir(self, job_id: str, revision_id: int, window_key: str) -> Path:
+        d = self.get_revision_dir(job_id, revision_id) / "samples" / window_key
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def get_speaker_sample_original(self, job_id: str, revision_id: int, window_key: str) -> Path:
+        return self.get_speaker_sample_dir(job_id, revision_id, window_key) / "original.mp4"
+
+    def get_speaker_sample_dubbed(self, job_id: str, revision_id: int, window_key: str, content_digest: str) -> Path:
+        d = self.get_speaker_sample_dir(job_id, revision_id, window_key) / content_digest[:16]
+        d.mkdir(parents=True, exist_ok=True)
+        return d / "dubbed.mp4"
+
+    def get_full_preview_path(self, job_id: str, revision_id: int) -> Path:
+        return self.get_revision_dir(job_id, revision_id) / "preview_full.mp4"
+
+    def get_review_decisions_path(self, job_id: str, revision_id: int) -> Path:
+        return self.get_revision_dir(job_id, revision_id) / "review_decisions.json"
+
+    def get_speaker_review_report_path(self, job_id: str, revision_id: int) -> Path:
+        return self.get_revision_dir(job_id, revision_id) / "speaker_review_report.json"
+
     def get_voice_sample_path(self, voice_name: str) -> Path:
         safe_name = "".join(c for c in voice_name if c.isalnum() or c in "-_")
         return self.voice_samples_dir / f"{safe_name}.mp3"

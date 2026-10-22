@@ -112,9 +112,19 @@ async def cb_choose_source_timed_dubbing(call: CallbackQuery, state: FSMContext)
         )
         await state.set_state(WizardStep.dubbing_review)
 
-        # Present paginated segment review (3 segments per page)
-        from app.handlers.dubbing import render_segment_review_page
-        await render_segment_review_page(call, job_id, rev.revision_id, page=1, plan=plan)
+        if config.enable_multi_speaker_dubbing:
+            from app.ui.speaker_keyboards import speaker_mode_choice_keyboard
+            await safe_edit_message(
+                call,
+                "👥 **ជ្រើសរើសរបៀបសំឡេងសម្រាប់វីដេអូនេះ៖**\n\n"
+                "• 🎙 **សំឡេងមួយ** — ប្រើសំឡេង AI តែមួយសម្រាប់វីដេអូទាំងមូល\n"
+                "• 👥 **សំឡេងតាមអ្នកនិយាយ** — បែងចែកអ្នកនិយាយ (Speaker A/B) និងជ្រើសសំឡេង AI ដាច់ដោយឡែកសម្រាប់តួអង្គម្នាក់ៗ",
+                reply_markup=speaker_mode_choice_keyboard(job_id),
+            )
+        else:
+            # Present paginated segment review (3 segments per page)
+            from app.handlers.dubbing import render_segment_review_page
+            await render_segment_review_page(call, job_id, rev.revision_id, page=1, plan=plan)
 
     except Exception as e:
         logger.exception(f"Source-timed dubbing setup failed for job {job_id}: {e}")

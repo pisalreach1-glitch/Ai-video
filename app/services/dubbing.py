@@ -18,22 +18,28 @@ def compute_tts_cache_key(text: str, voice: str, speed: str) -> str:
     raw = f"{voice}:{speed}:{text.strip()}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
+from app.services.speaker_voices import resolve_voice, speaker_tts_cache_key, VoiceSelectionRequired
+from app.services.voices import get_available_voices
+
 async def synthesize_and_fit_plan(
     plan: DubbingPlan,
     job_id: str,
     revision_id: int,
     settings: VoiceSettings,
     cancel_check: Callable[[], bool] | None = None,
+    require_confirmed_voices: bool = True,
 ) -> DubbingPlan:
     """
     Synthesizes each translated segment, decodes to PCM WAV, applies tempo fitting,
     and identifies any overlong or colliding segments.
+    In multi-speaker mode, resolves the chosen voice for each segment individually.
     """
     plan.clips.clear()
-    plan.issues.clear()
+    # Retain non-fit issues instead of wiping everything
+    plan.issues = [i for i in plan.issues if i.issue_type not in ("too_long", "collision", "overrun")]
 
-    voice = settings.voice
-    speed = settings.speed
+    available_voices = await get_available_voices()
+    available_voice_ids = {v["ShortName"] for v in available_voices}
 
     for i, t_seg in enumerate(plan.translations):
         if cancel_check and cancel_check():
@@ -59,15 +65,62 @@ async def synthesize_and_fit_plan(
             ))
             continue
 
-        cache_key = compute_tts_cache_key(text, voice, speed)
+        # Resolve voice per utterance
+        if plan.speaker_mode == "multi":
+            asgn = plan.get_assignment(t_seg.segment_id)
+            if not asgn or not asgn.speaker_id:
+                plan.issues.append(DubbingIssue(
+                    segment_id=t_seg.segment_id,
+                    issue_type="unknown_speaker",
+                    message=f"ឃ្លា {t_seg.segment_id} មិនទាន់បានកំណត់អ្នកនិយាយឡើយ។",
+                    severity="blocking",
+                ))
+                continue
+            try:
+                choice = resolve_voice(
+                    assignment=asgn,
+                    voice_map=plan.speaker_voice_map,
+                    available_voice_ids=available_voice_ids,
+                    require_confirmed=require_confirmed_voices,
+                )
+                voice = choice.voice_id
+                speed = choice.rate
+                cache_key = speaker_tts_cache_key(text, choice, "edge-tts")
+            except VoiceSelectionRequired as ve:
+                plan.issues.append(DubbingIssue(
+                    segment_id=t_seg.segment_id,
+                    issue_type=str(ve),
+                    message=f"បញ្ហាសំឡេងលើឃ្លា {t_seg.segment_id} ({ve})",
+                    severity="blocking",
+                ))
+                continue
+        else:
+            voice = settings.voice
+            speed = settings.speed
+            cache_key = compute_tts_cache_key(text, voice, speed)
+
         seg_dir = workspace.get_segment_dir(job_id, revision_id, t_seg.segment_id)
         raw_mp3 = workspace.get_segment_voice_mp3(job_id, revision_id, t_seg.segment_id)
         raw_wav = workspace.get_segment_voice_wav(job_id, revision_id, t_seg.segment_id)
         events_json_path = workspace.get_segment_tts_events_path(job_id, revision_id, t_seg.segment_id)
+        manifest_key_path = seg_dir / "tts_cache_key.txt"
 
-        # Generate audio via Edge-TTS (or reuse cached)
+        # Check if cached audio exists AND matches the exact cache key
+        can_reuse_audio = (
+            raw_mp3.exists()
+            and raw_mp3.stat().st_size > 0
+            and events_json_path.exists()
+            and manifest_key_path.exists()
+            and manifest_key_path.read_text(encoding="utf-8").strip() == cache_key
+        )
+
         timing_events: list[dict[str, Any]] = []
-        if not raw_mp3.exists() or raw_mp3.stat().st_size == 0 or not events_json_path.exists():
+        if not can_reuse_audio:
+            # Stale or missing audio -> regenerate
+            raw_mp3.unlink(missing_ok=True)
+            raw_wav.unlink(missing_ok=True)
+            events_json_path.unlink(missing_ok=True)
+
             _, actual_sec, events = await generate_narration(
                 text=text,
                 voice=voice,
@@ -77,6 +130,7 @@ async def synthesize_and_fit_plan(
             )
             timing_events = events
             events_json_path.write_text(json.dumps(events, ensure_ascii=False, indent=2), encoding="utf-8")
+            manifest_key_path.write_text(cache_key, encoding="utf-8")
         else:
             try:
                 timing_events = json.loads(events_json_path.read_text(encoding="utf-8"))

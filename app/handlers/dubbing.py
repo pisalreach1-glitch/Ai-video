@@ -390,7 +390,7 @@ async def cb_dubbing_report(call: CallbackQuery) -> None:
     avg_tempo = sum(tempos) / len(tempos) if tempos else 1.0
 
     issues = report.get("issues", []) if report else []
-    issues_text = f"មាន {len(issues)} បញ្ហា" if issues else "គ្មានបញ្ហាឡើយ (១០០% សុក្រឹត)"
+    issues_text = f"មាន {len(issues)} បញ្ហា" if issues else "មិនមានបញ្ហាដែលប្រព័ន្ធបានរកឃើញ។ សូមពិនិត្យ Preview មុនបញ្ជាក់។"
 
     report_text = texts.DUBBING_ALIGNMENT_REPORT.format(
         duration=dur,

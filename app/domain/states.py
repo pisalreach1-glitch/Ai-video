@@ -48,3 +48,5 @@ class WizardStep(StatesGroup):
     dubbing_review = State()
     editing_segment_text = State()
     resolving_fit = State()
+    renaming_speaker = State()
+    editing_speaker_segment = State()

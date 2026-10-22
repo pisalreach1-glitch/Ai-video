@@ -1,0 +1,7 @@
+# Optional local dependencies for Multi-Speaker Khmer Diarization
+# Model: pyannote/speaker-diarization-community-1
+# Requires operator-provided HF_TOKEN with model license accepted on Hugging Face.
+# Hardware: 4GB+ RAM, multi-core CPU or NVIDIA GPU with CUDA.
+pyannote.audio>=3.1.1
+torch>=2.0.0
+torchaudio>=2.0.0

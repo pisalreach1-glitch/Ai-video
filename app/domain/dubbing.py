@@ -4,6 +4,14 @@ import json
 from dataclasses import dataclass, field, asdict
 from typing import Any
 
+from app.domain.speakers import (
+    SpeakerProfile,
+    SpeakerTurn,
+    SpeakerAssignment,
+    VoiceChoice,
+    ReviewIssue,
+)
+
 @dataclass
 class SourceSegment:
     segment_id: str
@@ -14,6 +22,10 @@ class SourceSegment:
     words: list[dict[str, Any]] | None = None
     timing_origin: str = "local_asr" # "local_asr" | "imported_srt" | "user_corrected"
     needs_review: bool = False
+    speaker_id: str | None = None
+    speaker_assignment_origin: str = "auto" # "auto" | "manual" | "legacy"
+    speaker_evidence_key: str = ""
+    parent_segment_id: str | None = None
 
     @property
     def duration_ms(self) -> int:
@@ -33,6 +45,10 @@ class SourceSegment:
             words=data.get("words"),
             timing_origin=str(data.get("timing_origin", "local_asr")),
             needs_review=bool(data.get("needs_review", False)),
+            speaker_id=str(data["speaker_id"]) if data.get("speaker_id") is not None else None,
+            speaker_assignment_origin=str(data.get("speaker_assignment_origin", "auto")),
+            speaker_evidence_key=str(data.get("speaker_evidence_key", "")),
+            parent_segment_id=str(data["parent_segment_id"]) if data.get("parent_segment_id") is not None else None,
         )
 
 @dataclass
@@ -143,10 +159,23 @@ class DubbingPlan:
     clips: list[DubClip] = field(default_factory=list)
     placements: list[Placement] = field(default_factory=list)
     issues: list[DubbingIssue] = field(default_factory=list)
+    # Multi-speaker extensions (Schema version 2)
+    schema_version: int = 2
+    speaker_mode: str = "single" # "single" | "multi"
+    source_analysis_key: str = ""
+    speakers: list[SpeakerProfile] = field(default_factory=list)
+    speaker_turns: list[SpeakerTurn] = field(default_factory=list)
+    speaker_assignments: list[SpeakerAssignment] = field(default_factory=list)
+    speaker_voice_map: dict[str, VoiceChoice] = field(default_factory=dict)
+    review_issues: list[ReviewIssue] = field(default_factory=list)
+    preview_plan_digest: str | None = None
+    full_preview_approved_digest: str | None = None
 
     @property
     def has_blocking_issues(self) -> bool:
-        return any(issue.severity == "blocking" for issue in self.issues)
+        has_fit_blocking = any(issue.severity == "blocking" for issue in self.issues)
+        has_review_blocking = any(issue.blocking and issue.is_open for issue in self.review_issues)
+        return has_fit_blocking or has_review_blocking
 
     def get_segment(self, segment_id: str) -> SourceSegment | None:
         for s in self.segments:
@@ -172,6 +201,18 @@ class DubbingPlan:
                 return p
         return None
 
+    def get_speaker(self, speaker_id: str) -> SpeakerProfile | None:
+        for spk in self.speakers:
+            if spk.speaker_id == speaker_id:
+                return spk
+        return None
+
+    def get_assignment(self, segment_id: str) -> SpeakerAssignment | None:
+        for asgn in self.speaker_assignments:
+            if asgn.segment_id == segment_id:
+                return asgn
+        return None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "mode": self.mode,
@@ -184,10 +225,28 @@ class DubbingPlan:
             "clips": [c.to_dict() for c in self.clips],
             "placements": [p.to_dict() for p in self.placements],
             "issues": [i.to_dict() for i in self.issues],
+            "schema_version": self.schema_version,
+            "speaker_mode": self.speaker_mode,
+            "source_analysis_key": self.source_analysis_key,
+            "speakers": [spk.to_dict() for spk in self.speakers],
+            "speaker_turns": [turn.to_dict() for turn in self.speaker_turns],
+            "speaker_assignments": [asgn.to_dict() for asgn in self.speaker_assignments],
+            "speaker_voice_map": {k: v.to_dict() for k, v in self.speaker_voice_map.items()},
+            "review_issues": [issue.to_dict() for issue in self.review_issues],
+            "preview_plan_digest": self.preview_plan_digest,
+            "full_preview_approved_digest": self.full_preview_approved_digest,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DubbingPlan:
+        # Backward compatibility for old JSON schema
+        voice_map_data = data.get("speaker_voice_map", {})
+        voice_map: dict[str, VoiceChoice] = {}
+        if isinstance(voice_map_data, dict):
+            for k, v in voice_map_data.items():
+                if isinstance(v, dict):
+                    voice_map[k] = VoiceChoice.from_dict(v)
+
         return cls(
             mode=str(data.get("mode", "source_timed")),
             source_fingerprint=str(data.get("source_fingerprint", "")),
@@ -199,6 +258,16 @@ class DubbingPlan:
             clips=[DubClip.from_dict(c) for c in data.get("clips", [])],
             placements=[Placement.from_dict(p) for p in data.get("placements", [])],
             issues=[DubbingIssue.from_dict(i) for i in data.get("issues", [])],
+            schema_version=int(data.get("schema_version", 2 if "speakers" in data else 1)),
+            speaker_mode=str(data.get("speaker_mode", "single")),
+            source_analysis_key=str(data.get("source_analysis_key", "")),
+            speakers=[SpeakerProfile.from_dict(spk) for spk in data.get("speakers", [])],
+            speaker_turns=[SpeakerTurn.from_dict(turn) for turn in data.get("speaker_turns", [])],
+            speaker_assignments=[SpeakerAssignment.from_dict(asgn) for asgn in data.get("speaker_assignments", [])],
+            speaker_voice_map=voice_map,
+            review_issues=[ReviewIssue.from_dict(issue) for issue in data.get("review_issues", [])],
+            preview_plan_digest=data.get("preview_plan_digest"),
+            full_preview_approved_digest=data.get("full_preview_approved_digest"),
         )
 
     def to_json(self, indent: int = 2) -> str:

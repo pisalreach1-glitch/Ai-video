@@ -35,6 +35,14 @@ class Settings:
     telegram_api_hash: str | None = None
     douyin_cookie: str | None = None
     ytdlp_cookiefile: Path | None = None
+    enable_multi_speaker_dubbing: bool = True
+    speaker_diarization_backend: str = "pyannote_local"
+    speaker_diarization_model: str = "pyannote/speaker-diarization-community-1"
+    speaker_device: str = "cpu"
+    speaker_require_unscored_review: bool = True
+    speaker_enable_visual_matching: bool = False
+    speaker_preview_context_ms: int = 750
+    hf_token: str = ""
 
 def _find_binary(name: str, explicit_path: str | None = None) -> str:
     """Locate binary path or raise error."""
@@ -117,6 +125,14 @@ def load_settings() -> Settings:
             if os.getenv("YTDLP_COOKIEFILE") and Path(os.getenv("YTDLP_COOKIEFILE").strip()).exists()
             else (Path("cookies.txt").resolve() if Path("cookies.txt").exists() else None)
         ),
+        enable_multi_speaker_dubbing=os.getenv("ENABLE_MULTI_SPEAKER_DUBBING", "true").lower() in ("true", "1", "yes"),
+        speaker_diarization_backend=os.getenv("SPEAKER_DIARIZATION_BACKEND", "pyannote_local"),
+        speaker_diarization_model=os.getenv("SPEAKER_DIARIZATION_MODEL", "pyannote/speaker-diarization-community-1"),
+        speaker_device=os.getenv("SPEAKER_DEVICE", "cpu"),
+        speaker_require_unscored_review=os.getenv("SPEAKER_REQUIRE_UNSCORED_REVIEW", "true").lower() in ("true", "1", "yes"),
+        speaker_enable_visual_matching=os.getenv("SPEAKER_ENABLE_VISUAL_MATCHING", "false").lower() in ("true", "1", "yes"),
+        speaker_preview_context_ms=int(os.getenv("SPEAKER_PREVIEW_CONTEXT_MS", "750")),
+        hf_token=os.getenv("HF_TOKEN", ""),
     )
 
 config = load_settings()
