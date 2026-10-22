@@ -136,14 +136,22 @@ async def handle_narration_text(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "narration_replace")
 async def cb_narration_replace(call: CallbackQuery, state: FSMContext) -> None:
+    try:
+        await call.answer()
+    except Exception:
+        pass
     await state.set_state(WizardStep.awaiting_narration_text)
-    await call.message.edit_text(
-        texts.NARRATION_PROMPT.format(max_chars=config.max_narration_chars)
+    await safe_edit_message(
+        call,
+        texts.NARRATION_PROMPT.format(max_chars=config.max_narration_chars),
     )
-    await call.answer()
 
 @router.callback_query(F.data == "narration_confirm")
 async def cb_narration_confirm(call: CallbackQuery, state: FSMContext) -> None:
+    try:
+        await call.answer()
+    except Exception:
+        pass
     data = await state.get_data()
     job_id = data.get("job_id")
     narration_text = data.get("narration_text", "")
@@ -161,16 +169,20 @@ async def cb_narration_confirm(call: CallbackQuery, state: FSMContext) -> None:
     job_storage.set_job_status(job_id, JobState.AWAITING_SETTINGS)
 
     await state.set_state(WizardStep.customizing_settings)
-    await call.message.edit_text(
+    await safe_edit_message(
+        call,
         texts.AFTER_NARRATION_PROMPT,
         reply_markup=after_narration_keyboard(),
     )
-    await call.answer()
 
 @router.callback_query(F.data == "nav_narration")
 async def cb_nav_narration(call: CallbackQuery, state: FSMContext) -> None:
+    try:
+        await call.answer()
+    except Exception:
+        pass
     await state.set_state(WizardStep.awaiting_narration_text)
-    await call.message.edit_text(
-        texts.NARRATION_PROMPT.format(max_chars=config.max_narration_chars)
+    await safe_edit_message(
+        call,
+        texts.NARRATION_PROMPT.format(max_chars=config.max_narration_chars),
     )
-    await call.answer()

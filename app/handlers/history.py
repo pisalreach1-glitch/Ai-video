@@ -17,6 +17,10 @@ PAGE_SIZE = 5
 
 @router.callback_query(F.data.startswith("nav_my_videos:"))
 async def cb_my_videos_page(call: CallbackQuery) -> None:
+    try:
+        await call.answer()
+    except Exception:
+        pass
     _, page_str = call.data.split(":")
     page = max(1, int(page_str))
     user_id = call.from_user.id
@@ -30,7 +34,6 @@ async def cb_my_videos_page(call: CallbackQuery) -> None:
             texts.HISTORY_EMPTY,
             reply_markup=main_menu_keyboard(has_active_job=False),
         )
-        await call.answer()
         return
 
     total_pages = math.ceil(total / PAGE_SIZE)
@@ -50,10 +53,13 @@ async def cb_my_videos_page(call: CallbackQuery) -> None:
         text,
         reply_markup=history_keyboard(page=page, total_pages=total_pages, job_items=items),
     )
-    await call.answer()
 
 @router.callback_query(F.data.startswith("hist_job:"))
 async def cb_history_job_detail(call: CallbackQuery) -> None:
+    try:
+        await call.answer()
+    except Exception:
+        pass
     _, job_id = call.data.split(":")
     job = job_storage.get_job(job_id)
     if not job:

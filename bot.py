@@ -2,6 +2,12 @@
 import asyncio
 import logging
 import sys
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(line_buffering=True)
+
 from app.main import main
 
 if __name__ == "__main__":

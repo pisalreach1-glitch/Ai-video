@@ -1,4 +1,4 @@
-"""Handlers for Source-Timed Khmer Dubbing review, segment editing, and timeline orchestration."""
+import asyncio
 import math
 import logging
 import unicodedata
@@ -335,13 +335,14 @@ async def cb_dubbing_proceed(call: CallbackQuery, state: FSMContext | None = Non
         # Step 2: Assemble timeline audio
         job_storage.set_job_status(job_id, JobState.ASSEMBLING_TIMELINE, stage="assembling_timeline")
         timeline_wav = workspace.get_timeline_audio_path(job_id, revision_id)
-        placements, sync_report = assemble_timeline_pcm(plan, timeline_wav)
+        placements, sync_report = await asyncio.to_thread(assemble_timeline_pcm, plan, timeline_wav)
         save_sync_report(job_id, revision_id, sync_report)
 
         # Step 3: Build timeline subtitles
         sub_srt = workspace.get_subtitles_srt_path(job_id, revision_id)
         sub_ass = workspace.get_subtitles_ass_path(job_id, revision_id)
-        build_timeline_subtitles(
+        await asyncio.to_thread(
+            build_timeline_subtitles,
             plan=plan,
             output_srt=sub_srt,
             output_ass=sub_ass,

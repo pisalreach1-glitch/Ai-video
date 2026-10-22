@@ -7,13 +7,40 @@ from app.ui import texts_km as texts
 
 logger = logging.getLogger(__name__)
 
-async def safe_edit_message(call: CallbackQuery, text: str, reply_markup=None) -> None:
+async def safe_edit_message(
+    call: CallbackQuery,
+    text: str,
+    reply_markup=None,
+    prefer_new_for_media: bool = False,
+) -> None:
     """
-    Safely edit message text or caption, or send a new message if editing fails.
+    Safely edit message text or caption, or send a new message if editing fails or if message is media.
     Prevents TelegramBadRequest 'there is no text in the message to edit' and entity parsing errors.
     """
     msg = call.message
-    if msg.video or msg.document or msg.photo:
+    if not msg:
+        return
+
+    is_media = bool(
+        getattr(msg, "video", None)
+        or getattr(msg, "document", None)
+        or getattr(msg, "photo", None)
+        or getattr(msg, "audio", None)
+        or getattr(msg, "voice", None)
+        or getattr(msg, "animation", None)
+    )
+
+    if is_media and prefer_new_for_media:
+        try:
+            await msg.answer(text, reply_markup=reply_markup)
+            return
+        except Exception as e:
+            if "can't parse entities" in str(e).lower():
+                await msg.answer(text, reply_markup=reply_markup, parse_mode=None)
+                return
+            logger.warning(f"safe_edit_message prefer_new_for_media failed: {e}")
+
+    if is_media:
         try:
             await msg.edit_caption(caption=text, reply_markup=reply_markup)
             return

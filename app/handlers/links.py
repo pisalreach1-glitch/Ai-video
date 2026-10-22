@@ -15,6 +15,7 @@ from app.services.downloader import (
 from app.services.media import probe_media
 from app.jobs.worker import worker_pool
 from app.ui import texts_km as texts
+from app.handlers.common import safe_edit_message
 from app.ui.keyboards import (
     source_choice_keyboard,
     link_download_keyboard,
@@ -27,9 +28,12 @@ router = Router(name="links")
 
 @router.callback_query(F.data == "src_link")
 async def cb_source_link(call: CallbackQuery, state: FSMContext) -> None:
+    try:
+        await call.answer()
+    except Exception:
+        pass
     await state.set_state(WizardStep.awaiting_url_input)
-    await call.message.edit_text(texts.LINK_PROMPT, reply_markup=source_choice_keyboard())
-    await call.answer()
+    await safe_edit_message(call, texts.LINK_PROMPT, reply_markup=source_choice_keyboard())
 
 @router.message(WizardStep.awaiting_url_input, F.text.regexp(r"^https?://\S+"))
 async def handle_url_input(message: Message, state: FSMContext) -> None:

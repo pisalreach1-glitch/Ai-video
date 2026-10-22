@@ -11,6 +11,7 @@ from app.storage.jobs import job_storage
 from app.storage.workspaces import workspace
 from app.services.media import probe_media
 from app.ui import texts_km as texts
+from app.handlers.common import safe_edit_message
 from app.ui.keyboards import (
     caption_confirm_keyboard,
     narration_confirm_keyboard,
@@ -31,9 +32,12 @@ def get_user_upload_lock(user_id: int, chat_id: int) -> asyncio.Lock:
 
 @router.callback_query(F.data == "src_upload")
 async def cb_source_upload(call: CallbackQuery, state: FSMContext) -> None:
+    try:
+        await call.answer()
+    except Exception:
+        pass
     await state.set_state(WizardStep.awaiting_video_source)
-    await call.message.edit_text(texts.UPLOAD_PROMPT, reply_markup=source_choice_keyboard())
-    await call.answer()
+    await safe_edit_message(call, texts.UPLOAD_PROMPT, reply_markup=source_choice_keyboard())
 
 @router.message(F.video | F.document)
 async def handle_video_upload(message: Message, state: FSMContext, bot: Bot) -> None:
@@ -147,12 +151,17 @@ async def handle_video_upload(message: Message, state: FSMContext, bot: Bot) -> 
 
 @router.callback_query(F.data == "caption_use")
 async def cb_caption_use(call: CallbackQuery, state: FSMContext) -> None:
+    try:
+        await call.answer()
+    except Exception:
+        pass
     data = await state.get_data()
     caption = data.get("caption_text", "")
     await state.update_data(narration_text=caption)
     await state.set_state(WizardStep.editing_narration_text)
 
-    await call.message.edit_text(
+    await safe_edit_message(
+        call,
         texts.NARRATION_CONFIRM.format(
             text=caption,
             chars=len(caption),
@@ -160,12 +169,15 @@ async def cb_caption_use(call: CallbackQuery, state: FSMContext) -> None:
         ),
         reply_markup=narration_confirm_keyboard(),
     )
-    await call.answer()
 
 @router.callback_query(F.data == "caption_skip")
 async def cb_caption_skip(call: CallbackQuery, state: FSMContext) -> None:
+    try:
+        await call.answer()
+    except Exception:
+        pass
     await state.set_state(WizardStep.awaiting_narration_text)
-    await call.message.edit_text(
+    await safe_edit_message(
+        call,
         texts.NARRATION_PROMPT.format(max_chars=config.max_narration_chars)
     )
-    await call.answer()

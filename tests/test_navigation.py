@@ -74,3 +74,57 @@ def test_job_resume_detection(temp_job_storage):
     # Marking completed means no active job to resume
     temp_job_storage.set_job_status(job.job_id, JobState.COMPLETED)
     assert temp_job_storage.get_user_active_job(user_id, chat_id) is None
+
+@pytest.mark.asyncio
+async def test_safe_edit_message_media_and_text():
+    """Verify safe_edit_message correctly distinguishes media and text messages without raising errors."""
+    from unittest.mock import AsyncMock, MagicMock
+    from app.handlers.common import safe_edit_message
+
+    # Case 1: Regular text message
+    text_call = MagicMock()
+    text_msg = MagicMock()
+    text_msg.text = "Existing text"
+    text_msg.video = None
+    text_msg.document = None
+    text_msg.photo = None
+    text_msg.audio = None
+    text_msg.voice = None
+    text_msg.animation = None
+    text_msg.edit_text = AsyncMock()
+    text_call.message = text_msg
+
+    await safe_edit_message(text_call, "New text")
+    text_msg.edit_text.assert_called_once()
+
+    # Case 2: Media message with prefer_new_for_media=True (e.g. Nav Main / New Video from delivered video)
+    media_call = MagicMock()
+    media_msg = MagicMock()
+    media_msg.text = None
+    media_msg.video = MagicMock()
+    media_msg.document = None
+    media_msg.photo = None
+    media_msg.audio = None
+    media_msg.voice = None
+    media_msg.animation = None
+    media_msg.answer = AsyncMock()
+    media_call.message = media_msg
+
+    await safe_edit_message(media_call, "Welcome text", prefer_new_for_media=True)
+    media_msg.answer.assert_called_once()
+
+    # Case 3: Media message where edit_caption succeeds
+    media_call2 = MagicMock()
+    media_msg2 = MagicMock()
+    media_msg2.text = None
+    media_msg2.video = MagicMock()
+    media_msg2.document = None
+    media_msg2.photo = None
+    media_msg2.audio = None
+    media_msg2.voice = None
+    media_msg2.animation = None
+    media_msg2.edit_caption = AsyncMock()
+    media_call2.message = media_msg2
+
+    await safe_edit_message(media_call2, "New caption", prefer_new_for_media=False)
+    media_msg2.edit_caption.assert_called_once()

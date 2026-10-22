@@ -7,6 +7,7 @@ from app.domain.states import WizardStep, JobState
 from app.storage.jobs import job_storage
 from app.storage.sessions import session_storage
 from app.storage.preferences import preferences_storage
+from app.handlers.common import safe_edit_message
 from app.ui import texts_km as texts
 from app.ui.keyboards import (
     main_menu_keyboard,
@@ -32,6 +33,10 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "nav_main")
 async def cb_main_menu(call: CallbackQuery, state: FSMContext) -> None:
+    try:
+        await call.answer()
+    except Exception:
+        pass
     user_id = call.from_user.id
     chat_id = call.message.chat.id
 
@@ -42,19 +47,26 @@ async def cb_main_menu(call: CallbackQuery, state: FSMContext) -> None:
     if has_active:
         text += f"\n\n{texts.RESUME_NOTICE}"
 
-    await call.message.edit_text(text, reply_markup=main_menu_keyboard(has_active_job=has_active))
-    await call.answer()
+    await safe_edit_message(call, text, reply_markup=main_menu_keyboard(has_active_job=has_active), prefer_new_for_media=True)
 
 @router.message(Command("help"))
 @router.callback_query(F.data == "nav_help")
 async def cmd_help(event: Message | CallbackQuery) -> None:
-    message = event if isinstance(event, Message) else event.message
-    await message.answer(texts.HELP_TEXT, reply_markup=main_menu_keyboard(has_active_job=False))
     if isinstance(event, CallbackQuery):
-        await event.answer()
+        try:
+            await event.answer()
+        except Exception:
+            pass
+        await safe_edit_message(event, texts.HELP_TEXT, reply_markup=main_menu_keyboard(has_active_job=False), prefer_new_for_media=True)
+    else:
+        await event.answer(texts.HELP_TEXT, reply_markup=main_menu_keyboard(has_active_job=False))
 
 @router.callback_query(F.data == "nav_new_video")
 async def cb_new_video(call: CallbackQuery, state: FSMContext) -> None:
+    try:
+        await call.answer()
+    except Exception:
+        pass
     user_id = call.from_user.id
     chat_id = call.message.chat.id
 
@@ -71,11 +83,14 @@ async def cb_new_video(call: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(WizardStep.awaiting_video_source)
     await state.update_data(job_id=job.job_id)
 
-    await call.message.edit_text(texts.SOURCE_PROMPT, reply_markup=source_choice_keyboard())
-    await call.answer()
+    await safe_edit_message(call, texts.SOURCE_PROMPT, reply_markup=source_choice_keyboard(), prefer_new_for_media=True)
 
 @router.callback_query(F.data == "nav_my_settings")
 async def cb_my_settings(call: CallbackQuery) -> None:
+    try:
+        await call.answer()
+    except Exception:
+        pass
     user_id = call.from_user.id
     prefs = preferences_storage.get_preferences(user_id)
 
@@ -88,5 +103,4 @@ async def cb_my_settings(call: CallbackQuery) -> None:
         f"• 📐 ទំហំ៖ {prefs.aspect_ratio} ({prefs.framing_mode})\n\n"
         "💡 អ្នកអាចកែប្រែការកំណត់ទាំងនេះនៅពេលបង្កើតវីដេអូនីមួយៗ។"
     )
-    await call.message.edit_text(summary, reply_markup=main_menu_keyboard(has_active_job=False))
-    await call.answer()
+    await safe_edit_message(call, summary, reply_markup=main_menu_keyboard(has_active_job=False), prefer_new_for_media=True)
