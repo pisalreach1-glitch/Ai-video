@@ -47,16 +47,43 @@ async def deliver_final_video(
         )
 
         has_srt = bool(revision.subtitles_srt and Path(revision.subtitles_srt).exists())
-        await bot.send_video(
-            chat_id=chat_id,
-            video=video_input,
-            caption=caption,
-            reply_markup=job_completed_keyboard(job_id=job_id, has_srt=has_srt),
-            supports_streaming=True,
-            width=media_info.width,
-            height=media_info.height,
-            duration=int(media_info.duration),
-        )
+        try:
+            await bot.send_video(
+                chat_id=chat_id,
+                video=video_input,
+                caption=caption,
+                reply_markup=job_completed_keyboard(job_id=job_id, has_srt=has_srt),
+                supports_streaming=True,
+                width=media_info.width,
+                height=media_info.height,
+                duration=int(media_info.duration),
+                request_timeout=600,
+            )
+        except Exception as upload_err:
+            logger.warning(f"Bot API send_video failed ({upload_err}). Attempting Pyrogram MTProto fallback...")
+            try:
+                from app.services.tg_downloader import get_pyrogram_client
+                pyro = await get_pyrogram_client()
+                if pyro:
+                    await pyro.send_video(
+                        chat_id=chat_id,
+                        video=str(final_file),
+                        caption=caption,
+                        supports_streaming=True,
+                        width=media_info.width,
+                        height=media_info.height,
+                        duration=int(media_info.duration),
+                    )
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text="🎉 **វីដេអូត្រូវបានផ្ញើរួចរាល់ដោយជោគជ័យ!**",
+                        reply_markup=job_completed_keyboard(job_id=job_id, has_srt=has_srt),
+                    )
+                else:
+                    raise upload_err
+            except Exception as pyro_err:
+                logger.error(f"Pyrogram MTProto upload fallback failed: {pyro_err}")
+                raise upload_err
 
         # 2. Mark job completed
         job_storage.set_job_status(job_id, JobState.COMPLETED)
