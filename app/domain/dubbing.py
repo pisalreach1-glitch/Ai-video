@@ -57,6 +57,12 @@ class TranslatedSegment:
     translated_text: str
     translation_provider: str = "gemini"
     status: str = "pending" # "pending" | "ready" | "needs_review"
+    full_translation: str = ""
+    proposed_concise_text: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.full_translation and self.translated_text:
+            self.full_translation = self.translated_text
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -68,6 +74,8 @@ class TranslatedSegment:
             translated_text=str(data["translated_text"]),
             translation_provider=str(data.get("translation_provider", "gemini")),
             status=str(data.get("status", "pending")),
+            full_translation=str(data.get("full_translation", data["translated_text"])),
+            proposed_concise_text=str(data["proposed_concise_text"]) if data.get("proposed_concise_text") is not None else None,
         )
 
 @dataclass

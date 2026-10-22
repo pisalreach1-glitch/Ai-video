@@ -444,11 +444,14 @@ async def cb_dubbing_shorten_single_segment(call: CallbackQuery, state: FSMConte
         await call.answer(f"បរាជ័យក្នុងការសង្ខេប: {e}", show_alert=True)
         return
 
+    t_seg.full_translation = t_seg.full_translation or t_seg.translated_text
+    t_seg.proposed_concise_text = shortened
     t_seg.translated_text = shortened
     t_seg.status = "ready"
     save_dubbing_plan(job_id, revision_id, plan)
 
     invalidate_segment_tts(job_id, revision_id, segment_id)
+    call.data = f"d_proc:{job_id}:{revision_id}"
     await cb_dubbing_proceed(call, state=state)
 
 
@@ -501,9 +504,12 @@ async def cb_dubbing_shorten_all_overlong_segments(call: CallbackQuery, state: F
     for sid, new_text in shortened_map.items():
         t = plan.get_translation(sid)
         if t and new_text:
+            t.full_translation = t.full_translation or t.translated_text
+            t.proposed_concise_text = new_text
             t.translated_text = new_text
             t.status = "ready"
             invalidate_segment_tts(job_id, revision_id, sid)
 
     save_dubbing_plan(job_id, revision_id, plan)
+    call.data = f"d_proc:{job_id}:{revision_id}"
     await cb_dubbing_proceed(call, state=state)

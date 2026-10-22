@@ -25,16 +25,26 @@ def assert_final_ready(
     issues: Sequence[ReviewIssue],
     plan_digest: str,
     approved_full_preview_digest: str | None,
+    plan_issues: Sequence[Any] | None = None,
 ) -> None:
     """
     Validates that all segments are assigned, voices resolved, all blocking issues
-    resolved or acknowledged where permitted, and that the approved full preview digest matches.
+    (both speaker review issues and plan issues like too_long or missing_translation)
+    are resolved or acknowledged where permitted, and that the approved full preview digest matches.
     """
     if not segment_ids or len(set(segment_ids)) != len(segment_ids):
         raise ReviewRequired("invalid_segments")
 
-    if any(issue.blocking and issue.is_open for issue in issues):
-        raise ReviewRequired("unresolved_issues")
+    # Check plan issues (e.g. missing translation, too_long, overrun)
+    if plan_issues and any(getattr(i, "severity", "") == "blocking" for i in plan_issues):
+        raise ReviewRequired("unresolved_plan_issues")
+
+    # Check review issues or any blocking issues passed in
+    for issue in issues:
+        if getattr(issue, "severity", "") == "blocking":
+            raise ReviewRequired("unresolved_plan_issues")
+        if getattr(issue, "blocking", False) and getattr(issue, "is_open", True):
+            raise ReviewRequired("unresolved_issues")
 
     for segment_id in segment_ids:
         assignment = assignments.get(segment_id)

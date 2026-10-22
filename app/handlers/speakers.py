@@ -13,7 +13,8 @@ from aiogram.fsm.context import FSMContext
 
 from app.config import config
 from app.domain.states import WizardStep, JobState
-from app.domain.dubbing import DubbingPlan, SourceSegment
+from app.domain.models import Job, Revision
+from app.domain.dubbing import DubbingPlan, SourceSegment, TranslatedSegment
 from app.domain.speakers import (
     SpeakerProfile,
     SpeakerTurn,
@@ -28,7 +29,7 @@ from app.storage.speaker_reviews import speaker_review_store
 from app.handlers.common import safe_edit_message, safe_edit_reply_markup, verify_callback_job
 from app.services.voices import get_available_voices
 from app.services.speaker_voices import resolve_voice, VoiceSelectionRequired
-from app.services.speaker_samples import select_speaker_sample_window, format_window_label
+from app.services.speaker_samples import select_speaker_sample_window, format_window_label, review_window
 from app.services.speaker_assignment import assign_speakers_to_segments
 from app.services.speaker_review import (
     assert_final_ready,
@@ -37,6 +38,7 @@ from app.services.speaker_review import (
     compute_subject_key,
     ReviewRequired,
 )
+from app.services.content_coverage import validate_content_coverage, generate_completeness_report
 from app.services.previews import render_timed_excerpt, render_full_preview_video
 from app.services.dubbing import synthesize_and_fit_plan
 from app.services.timeline import assemble_timeline_pcm
@@ -52,6 +54,60 @@ from app.ui.speaker_keyboards import (
 
 logger = logging.getLogger(__name__)
 router = Router(name="speakers")
+
+
+async def verify_speaker_token(
+    call: CallbackQuery,
+    token: str,
+    allowed_states: tuple[JobState, ...] | None = None,
+) -> tuple[dict[str, Any], Job, DubbingPlan, Revision] | None:
+    """
+    Validates token existence, expiration, user ownership, current revision, and job state (F1 guard).
+    """
+    token_data = speaker_review_store.get_token(token)
+    if not token_data:
+        await call.answer("វគ្គបានផុតកំណត់ សូមបើកឡើងវិញ។", show_alert=True)
+        return None
+
+    # Ownership check
+    if call.from_user.id != token_data["user_id"]:
+        await call.answer("អ្នកមិនមានសិទ្ធិកែប្រែការងាររបស់អ្នកដទៃឡើយ។", show_alert=True)
+        return None
+
+    job_id = token_data["job_id"]
+    rev_id = token_data["revision_id"]
+
+    # Immediate cancellation check
+    if worker_pool.is_cancelled(job_id):
+        await call.answer("ការងារត្រូវបានបោះបង់រួចហើយ។", show_alert=True)
+        return None
+
+    job = job_storage.get_job(job_id)
+    if not job:
+        await call.answer("មិនមានទិន្នន័យការងារឡើយ។", show_alert=True)
+        return None
+
+    if job.status == JobState.CANCELLED:
+        await call.answer("ការងារត្រូវបានបោះបង់រួចហើយ។", show_alert=True)
+        return None
+
+    # Revision check
+    if job.current_revision_id != rev_id:
+        await call.answer("កំណែប្រែនេះចាស់ហួសសម័យហើយ។", show_alert=True)
+        return None
+
+    rev = job_storage.get_revision(job_id, rev_id)
+    plan = load_dubbing_plan(job_id, rev_id)
+
+    if not rev or not plan:
+        await call.answer("មិនមានទិន្នន័យការងារឡើយ។", show_alert=True)
+        return None
+
+    if allowed_states and job.status not in allowed_states:
+        await call.answer("មិនអាចដំណើរការសកម្មភាពនេះក្នុងស្ថានភាពបច្ចុប្បន្នឡើយ។", show_alert=True)
+        return None
+
+    return token_data, job, plan, rev
 
 
 async def render_speaker_card(
@@ -90,6 +146,10 @@ async def render_speaker_card(
             window_label = format_window_label(w_start, w_end)
         except Exception:
             pass
+    elif plan.segments:
+        # Fallback to first segment duration
+        s0 = plan.segments[0]
+        window_label = format_window_label(s0.start_ms, s0.end_ms)
 
     # Resolve current voice choice
     voice_choice = plan.speaker_voice_map.get(spk_id)
@@ -129,12 +189,75 @@ async def render_speaker_card(
     )
 
 
+async def render_review_issue(
+    call: CallbackQuery,
+    token: str,
+    issue_idx: int = 0,
+    plan: DubbingPlan | None = None,
+) -> None:
+    """Renders a single review alert card with actionable resolution buttons (F10)."""
+    verified = await verify_speaker_token(call, token)
+    if not verified:
+        return
+    token_data, job, loaded_plan, rev = verified
+    if plan is None:
+        plan = loaded_plan
+
+    issues = plan.review_issues
+    if not issues:
+        await safe_edit_message(call, "✅ មិនមានបញ្ហាដែលត្រូវពិនិត្យឡើយ។")
+        await call.answer()
+        return
+
+    total_issues = len(issues)
+    idx = max(0, min(issue_idx, total_issues - 1))
+    issue = issues[idx]
+
+    seg = plan.get_segment(issue.segment_id)
+    time_label = format_window_label(seg.start_ms, seg.end_ms) if seg else issue.segment_id
+
+    reason_labels = {
+        "unknown_speaker": "មិនទាន់កំណត់អ្នកនិយាយ",
+        "unscored_assignment": "ការវិភាគស្វ័យប្រវត្តគ្មានពិន្ទុច្បាស់លាស់ (Unscored)",
+        "low_speaker_confidence": "ភាពជឿជាក់លើអ្នកនិយាយទាប (Low Confidence)",
+        "competing_speakers": "មានអ្នកនិយាយប្រជែងគ្នាលើឈុតតែមួយ",
+        "missing_voice": "មិនទាន់បានបញ្ជាក់សំឡេង AI",
+        "invalid_voice": "សំឡេង AI មិនត្រឹមត្រូវ",
+        "overlapping_speech": "សំឡេងនិយាយជាន់គ្នា",
+    }
+    reason_km = reason_labels.get(issue.reason, issue.reason)
+    status_km = "🔒 មិនទាន់ដោះស្រាយ" if issue.is_open else "✅ បានបញ្ជាក់យល់ព្រមរួច"
+
+    issue_text = (
+        f"⚠️ **ត្រូវពិនិត្យ ({idx + 1}/{total_issues})៖ {time_label}**\n\n"
+        f"• **ឃ្លា:** `{issue.segment_id}`\n"
+        f"• **មូលហេតុ:** {reason_km}\n"
+        f"• **ស្ថានភាព:** {status_km}\n\n"
+        f"សូមមើលវីដេអូ ឬកែសម្រួលដើម្បីដោះស្រាយបញ្ហានេះ។"
+    )
+
+    await safe_edit_message(
+        call,
+        issue_text,
+        reply_markup=review_issue_keyboard(
+            token=token,
+            issue_idx=idx,
+            total_issues=total_issues,
+            allow_confirm=issue.allow_confirmation and issue.is_open,
+            segment_id=issue.segment_id,
+        ),
+    )
+
+
 # ---------------- Speaker Mode Selection ----------------
 
 @router.callback_query(F.data.startswith("spk_m:s:"))
 async def cb_speaker_mode_single(call: CallbackQuery, state: FSMContext) -> None:
-    """User selects Single Voice mode."""
+    """User selects Single Voice mode (verified with verify_callback_job)."""
     _, _, job_id = call.data.split(":")
+    if not await verify_callback_job(call, job_id, allowed_states=(JobState.AWAITING_SEGMENT_REVIEW, JobState.AWAITING_TEXT)):
+        return
+
     job = job_storage.get_job(job_id)
     if not job:
         await call.answer("ការងារមិនត្រឹមត្រូវ។", show_alert=True)
@@ -153,8 +276,11 @@ async def cb_speaker_mode_single(call: CallbackQuery, state: FSMContext) -> None
 
 @router.callback_query(F.data.startswith("spk_m:m:"))
 async def cb_speaker_mode_multi(call: CallbackQuery, state: FSMContext) -> None:
-    """User selects Multi-Speaker Dubbing mode."""
+    """User selects Multi-Speaker Dubbing mode (verified with verify_callback_job)."""
     _, _, job_id = call.data.split(":")
+    if not await verify_callback_job(call, job_id, allowed_states=(JobState.AWAITING_SEGMENT_REVIEW, JobState.AWAITING_TEXT)):
+        return
+
     job = job_storage.get_job(job_id)
     if not job or not job.source_path:
         await call.answer("មិនអាចរកឃើញវីដេអូដើមឡើយ។", show_alert=True)
@@ -169,11 +295,12 @@ async def cb_speaker_mode_multi(call: CallbackQuery, state: FSMContext) -> None:
     await safe_edit_message(call, "⏳ កំពុងវិភាគអ្នកនិយាយក្នុងវីដេអូ (Speaker Diarization)... សូមរង់ចាំបន្តិច។")
     await call.answer("👥 កំពុងវិភាគអ្នកនិយាយ...")
 
-    # Run optional diarization or fallback
+    # Run optional diarization (F2 & F3)
     from app.services.speaker_diarization import run_speaker_diarization, is_diarization_available
     source_audio = workspace.get_source_audio_path(job_id)
 
     speaker_turns: list[SpeakerTurn] = []
+    diarization_ran = False
     if is_diarization_available() and source_audio.exists():
         try:
             speaker_turns = await run_speaker_diarization(
@@ -182,28 +309,71 @@ async def cb_speaker_mode_multi(call: CallbackQuery, state: FSMContext) -> None:
                 device=config.speaker_device,
                 model_name=config.speaker_diarization_model,
             )
+            diarization_ran = True
         except Exception as e:
-            logger.warning(f"Diarization fell back to default: {e}")
+            logger.warning(f"Diarization unavailable or failed: {e}")
 
-    # Fallback to alternate synthetic turns if diarization produced none
-    if not speaker_turns:
-        # Create default alternating turns Speaker A / Speaker B based on pause thresholds
-        spk_toggle = "Speaker A"
-        for i, s in enumerate(plan.segments):
-            if i > 0 and (s.start_ms - plan.segments[i - 1].end_ms) > 1000:
-                spk_toggle = "Speaker B" if spk_toggle == "Speaker A" else "Speaker A"
-            speaker_turns.append(SpeakerTurn(speaker_id=spk_toggle, start_ms=s.start_ms, end_ms=s.end_ms))
-
-    # Assign speakers & split ASR segments if needed
     analysis_key = f"diar_{job_id[:8]}"
-    out_segments, assignments, assign_issues = assign_speakers_to_segments(
-        segments=plan.segments,
-        turns=speaker_turns,
-        analysis_key=analysis_key,
-    )
 
-    # Distinct speaker profiles
-    distinct_spks = sorted(list({t.speaker_id for t in speaker_turns}))
+    # F3: Never fabricate alternating speaker turns when analysis is missing/failed!
+    if not speaker_turns:
+        # Honest setup: create manual profiles and leave assignments unassigned or manual
+        distinct_spks = ["Speaker A", "Speaker B"]
+        speaker_turns = []
+        out_segments = plan.segments
+        assignments = [
+            SpeakerAssignment(
+                segment_id=s.segment_id,
+                speaker_id=None,
+                evidence_key=analysis_key,
+                origin="auto",
+                confidence=None,
+                confidence_kind="unavailable",
+            )
+            for s in plan.segments
+        ]
+        assign_issues = [
+            ReviewIssue(
+                issue_id=f"unk_spk_{s.segment_id}",
+                segment_id=s.segment_id,
+                reason="unknown_speaker",
+                subject_key=analysis_key,
+                producer="speaker_assignment",
+                blocking=True,
+                allow_confirmation=False,
+            )
+            for s in plan.segments
+        ]
+    else:
+        # Assign speakers & split ASR segments if trustworthy word timings exist (F5)
+        out_segments, assignments, assign_issues = assign_speakers_to_segments(
+            segments=plan.segments,
+            turns=speaker_turns,
+            analysis_key=analysis_key,
+        )
+        distinct_spks = sorted(list({t.speaker_id for t in speaker_turns}))
+
+    # F5: Ensure every segment in out_segments has a corresponding TranslatedSegment
+    trans_map = {t.segment_id: t for t in plan.translations}
+    updated_translations: list[TranslatedSegment] = []
+    for s in out_segments:
+        existing = trans_map.get(s.segment_id)
+        if existing:
+            updated_translations.append(existing)
+        else:
+            # Child segment from split -> generate initial translation entry from parent or text
+            parent = trans_map.get(s.parent_segment_id) if s.parent_segment_id else None
+            initial_text = s.source_text if not parent else f"({parent.translated_text})"
+            updated_translations.append(
+                TranslatedSegment(
+                    segment_id=s.segment_id,
+                    translated_text=initial_text,
+                    translation_provider="split",
+                    status="needs_review",
+                    full_translation=initial_text,
+                )
+            )
+
     profiles = [
         SpeakerProfile(speaker_id=s, display_name=f"តួអង្គ {s.replace('Speaker ', '')}", analysis_key=analysis_key)
         for s in distinct_spks
@@ -220,6 +390,7 @@ async def cb_speaker_mode_multi(call: CallbackQuery, state: FSMContext) -> None:
     plan.speaker_mode = "multi"
     plan.source_analysis_key = analysis_key
     plan.segments = out_segments
+    plan.translations = updated_translations
     plan.speakers = profiles
     plan.speaker_turns = speaker_turns
     plan.speaker_assignments = assignments
@@ -250,12 +421,12 @@ async def cb_speaker_mode_multi(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("spk_p:"))
 async def cb_speaker_page(call: CallbackQuery) -> None:
-    """Paginate between speaker cards."""
+    """Paginate between speaker cards (F1 verified)."""
     _, token, page_str = call.data.split(":")
-    token_data = speaker_review_store.get_token(token)
-    if not token_data:
-        await call.answer("វគ្គបានផុតកំណត់ សូមបើកឡើងវិញ។", show_alert=True)
+    verified = await verify_speaker_token(call, token)
+    if not verified:
         return
+    token_data, job, plan, rev = verified
 
     page = int(page_str)
     await render_speaker_card(
@@ -264,37 +435,37 @@ async def cb_speaker_page(call: CallbackQuery) -> None:
         revision_id=token_data["revision_id"],
         user_id=token_data["user_id"],
         speaker_index=page - 1,
+        plan=plan,
     )
     await call.answer()
 
 
 @router.callback_query(F.data.startswith("spk_o:"))
 async def cb_speaker_original_sample(call: CallbackQuery) -> None:
-    """Watch original video + original audio sample for this speaker."""
+    """Watch original video + original audio sample for this speaker (F1 verified)."""
     _, token = call.data.split(":")
-    token_data = speaker_review_store.get_token(token)
-    if not token_data:
-        await call.answer("វគ្គបានផុតកំណត់។", show_alert=True)
+    verified = await verify_speaker_token(call, token)
+    if not verified:
         return
+    token_data, job, plan, rev = verified
 
     job_id = token_data["job_id"]
     rev_id = token_data["revision_id"]
     spk_id = token_data["target_id"]
 
-    job = job_storage.get_job(job_id)
-    plan = load_dubbing_plan(job_id, rev_id)
-    rev = job_storage.get_revision(job_id, rev_id)
-    if not job or not job.source_path or not plan or not rev:
-        await call.answer("មិនមានទិន្នន័យការងារឡើយ។", show_alert=True)
-        return
-
     await call.answer("🎬 កំពុងរៀបចំវីដេអូគំរូដើម...")
-    w_start, w_end = select_speaker_sample_window(
-        speaker_id=spk_id,
-        turns=plan.speaker_turns,
-        source_duration_ms=plan.source_duration_ms,
-        context_ms=config.speaker_preview_context_ms,
-    )
+
+    if plan.speaker_turns:
+        w_start, w_end = select_speaker_sample_window(
+            speaker_id=spk_id,
+            turns=plan.speaker_turns,
+            source_duration_ms=plan.source_duration_ms,
+            context_ms=config.speaker_preview_context_ms,
+        )
+    else:
+        # Fallback to first available segment
+        s0 = plan.segments[0]
+        w_start, w_end = review_window(s0.start_ms, s0.end_ms, plan.source_duration_ms)
 
     start_sec = w_start / 1000.0
     dur_sec = max(1.0, (w_end - w_start) / 1000.0)
@@ -310,6 +481,7 @@ async def cb_speaker_original_sample(call: CallbackQuery) -> None:
             start_sec=start_sec,
             duration_sec=dur_sec,
             variant="original",
+            cancel_check=lambda: worker_pool.is_cancelled(job_id),
         )
 
     if out_sample.exists():
@@ -323,32 +495,30 @@ async def cb_speaker_original_sample(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("spk_d:"))
 async def cb_speaker_dubbed_sample(call: CallbackQuery) -> None:
-    """Watch dubbed video sample for this speaker on the same window."""
+    """Watch dubbed video sample for this speaker on the same window (F1 & F8 verified)."""
     _, token = call.data.split(":")
-    token_data = speaker_review_store.get_token(token)
-    if not token_data:
-        await call.answer("វគ្គបានផុតកំណត់។", show_alert=True)
+    verified = await verify_speaker_token(call, token)
+    if not verified:
         return
+    token_data, job, plan, rev = verified
 
     job_id = token_data["job_id"]
     rev_id = token_data["revision_id"]
     spk_id = token_data["target_id"]
 
-    job = job_storage.get_job(job_id)
-    plan = load_dubbing_plan(job_id, rev_id)
-    rev = job_storage.get_revision(job_id, rev_id)
-    if not job or not job.source_path or not plan or not rev:
-        await call.answer("មិនមានទិន្នន័យការងារឡើយ។", show_alert=True)
-        return
-
     await call.answer("🎙️ កំពុងបង្កើតគំរូសំឡេងថ្មី...")
 
-    w_start, w_end = select_speaker_sample_window(
-        speaker_id=spk_id,
-        turns=plan.speaker_turns,
-        source_duration_ms=plan.source_duration_ms,
-        context_ms=config.speaker_preview_context_ms,
-    )
+    if plan.speaker_turns:
+        w_start, w_end = select_speaker_sample_window(
+            speaker_id=spk_id,
+            turns=plan.speaker_turns,
+            source_duration_ms=plan.source_duration_ms,
+            context_ms=config.speaker_preview_context_ms,
+        )
+    else:
+        s0 = plan.segments[0]
+        w_start, w_end = review_window(s0.start_ms, s0.end_ms, plan.source_duration_ms)
+
     start_sec = w_start / 1000.0
     dur_sec = max(1.0, (w_end - w_start) / 1000.0)
     window_key = f"{w_start}_{w_end}"
@@ -359,16 +529,21 @@ async def cb_speaker_dubbed_sample(call: CallbackQuery) -> None:
         job_id=job_id,
         revision_id=rev_id,
         settings=rev.settings,
+        cancel_check=lambda: worker_pool.is_cancelled(job_id),
         require_confirmed_voices=False,
     )
+    if worker_pool.is_cancelled(job_id):
+        return
+
     save_dubbing_plan(job_id, rev_id, plan)
 
     # Assemble timeline audio & subtitles
     timeline_wav = workspace.get_timeline_audio_path(job_id, rev_id)
     assemble_timeline_pcm(plan, timeline_wav)
 
+    sub_srt = workspace.get_subtitles_srt_path(job_id, rev_id)
     sub_ass = workspace.get_subtitles_ass_path(job_id, rev_id)
-    build_timeline_subtitles(plan, sub_ass, sub_ass, rev.settings.subtitle_color, rev.settings.subtitle_position)
+    build_timeline_subtitles(plan, sub_srt, sub_ass, rev.settings.subtitle_color, rev.settings.subtitle_position)
 
     voice_choice = plan.speaker_voice_map.get(spk_id)
     v_id = voice_choice.voice_id if voice_choice else "default"
@@ -383,9 +558,10 @@ async def cb_speaker_dubbed_sample(call: CallbackQuery) -> None:
         duration_sec=dur_sec,
         subtitles_ass_path=sub_ass,
         variant="dubbed",
+        cancel_check=lambda: worker_pool.is_cancelled(job_id),
     )
 
-    if out_dubbed.exists():
+    if out_dubbed.exists() and not worker_pool.is_cancelled(job_id):
         video_input = FSInputFile(str(out_dubbed), filename="dubbed_sample.mp4")
         await call.message.reply_video(
             video=video_input,
@@ -400,22 +576,14 @@ async def cb_speaker_dubbed_sample(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("spk_vl:"))
 async def cb_speaker_voice_list(call: CallbackQuery) -> None:
-    """Show voice list for this speaker."""
+    """Show voice list for this speaker (F1 verified)."""
     _, token = call.data.split(":")
-    token_data = speaker_review_store.get_token(token)
-    if not token_data:
-        await call.answer("វគ្គបានផុតកំណត់។", show_alert=True)
+    verified = await verify_speaker_token(call, token)
+    if not verified:
         return
+    token_data, job, plan, rev = verified
 
-    job_id = token_data["job_id"]
-    rev_id = token_data["revision_id"]
     spk_id = token_data["target_id"]
-
-    plan = load_dubbing_plan(job_id, rev_id)
-    if not plan:
-        await call.answer("មិនមានទិន្នន័យឡើយ។", show_alert=True)
-        return
-
     available_voices = await get_available_voices()
     curr_voice = plan.speaker_voice_map.get(spk_id)
     curr_id = curr_voice.voice_id if curr_voice else ""
@@ -430,22 +598,17 @@ async def cb_speaker_voice_list(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("spk_vs:"))
 async def cb_speaker_voice_select(call: CallbackQuery) -> None:
-    """Apply voice selection to speaker."""
+    """Apply voice selection to speaker (F1 verified)."""
     _, token, vidx_str = call.data.split(":")
-    token_data = speaker_review_store.get_token(token)
-    if not token_data:
-        await call.answer("វគ្គបានផុតកំណត់។", show_alert=True)
+    verified = await verify_speaker_token(call, token)
+    if not verified:
         return
+    token_data, job, plan, rev = verified
 
     job_id = token_data["job_id"]
     rev_id = token_data["revision_id"]
     spk_id = token_data["target_id"]
     vidx = int(vidx_str)
-
-    plan = load_dubbing_plan(job_id, rev_id)
-    if not plan:
-        await call.answer("មិនមានទិន្នន័យឡើយ។", show_alert=True)
-        return
 
     available_voices = await get_available_voices()
     if 0 <= vidx < len(available_voices):
@@ -479,21 +642,16 @@ async def cb_speaker_voice_select(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("spk_cf:"))
 async def cb_speaker_confirm_voice(call: CallbackQuery) -> None:
-    """Confirm chosen voice for this speaker."""
+    """Confirm chosen voice for this speaker (F1 & F7: preserve other producers' issues)."""
     _, token = call.data.split(":")
-    token_data = speaker_review_store.get_token(token)
-    if not token_data:
-        await call.answer("វគ្គបានផុតកំណត់។", show_alert=True)
+    verified = await verify_speaker_token(call, token)
+    if not verified:
         return
+    token_data, job, plan, rev = verified
 
     job_id = token_data["job_id"]
     rev_id = token_data["revision_id"]
     spk_id = token_data["target_id"]
-
-    plan = load_dubbing_plan(job_id, rev_id)
-    if not plan:
-        await call.answer("មិនមានទិន្នន័យឡើយ។", show_alert=True)
-        return
 
     choice = plan.speaker_voice_map.get(spk_id)
     if choice:
@@ -511,14 +669,16 @@ async def cb_speaker_confirm_voice(call: CallbackQuery) -> None:
             details={"voice_id": choice.voice_id, "rate": choice.rate},
         )
 
-        # Re-audit review issues
+        # F7: Re-audit only speaker_review issues, preserving other producers' issues!
         available_voices = await get_available_voices()
         available_ids = {v["ShortName"] for v in available_voices}
-        plan.review_issues = audit_speaker_plan(
+        audit_issues = audit_speaker_plan(
             plan=plan,
             available_voice_ids=available_ids,
             require_unscored_review=config.speaker_require_unscored_review,
         )
+        other_issues = [i for i in plan.review_issues if i.producer != "speaker_review"]
+        plan.review_issues = audit_issues + other_issues
         save_dubbing_plan(job_id, rev_id, plan)
 
     spk_idx = next((i for i, s in enumerate(plan.speakers) if s.speaker_id == spk_id), 0)
@@ -535,17 +695,18 @@ async def cb_speaker_confirm_voice(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("spk_rn:"))
 async def cb_speaker_rename(call: CallbackQuery, state: FSMContext) -> None:
-    """Prompt user to rename a speaker profile."""
+    """Prompt user to rename a speaker profile (F1 verified)."""
     _, token = call.data.split(":")
-    token_data = speaker_review_store.get_token(token)
-    if not token_data:
-        await call.answer("វគ្គបានផុតកំណត់។", show_alert=True)
+    verified = await verify_speaker_token(call, token)
+    if not verified:
         return
+    token_data, job, plan, rev = verified
 
     await state.update_data(
         job_id=token_data["job_id"],
         revision_id=token_data["revision_id"],
         renaming_speaker_id=token_data["target_id"],
+        user_id=token_data["user_id"],
     )
     await state.set_state(WizardStep.renaming_speaker)
     await safe_edit_message(
@@ -570,6 +731,7 @@ async def handle_speaker_rename_input(message: Message, state: FSMContext) -> No
     job_id = data.get("job_id")
     rev_id = data.get("revision_id")
     spk_id = data.get("renaming_speaker_id")
+    user_id = data.get("user_id", message.from_user.id)
 
     plan = load_dubbing_plan(job_id, rev_id)
     if not plan:
@@ -589,7 +751,7 @@ async def handle_speaker_rename_input(message: Message, state: FSMContext) -> No
     await state.set_state(WizardStep.dubbing_review)
     confirm_msg = await message.reply(f"✅ បានកំណត់ឈ្មោះ '{new_name}' សម្រាប់ {spk_id}!")
 
-    token = speaker_review_store.create_token(job_id, rev_id, message.from_user.id, spk_id)
+    token = speaker_review_store.create_token(job_id, rev_id, user_id, spk_id)
     has_full_preview = bool(plan.preview_plan_digest)
     open_issues = [i for i in plan.review_issues if i.blocking and i.is_open]
     voice_choice = plan.speaker_voice_map.get(spk_id)
@@ -610,84 +772,286 @@ async def handle_speaker_rename_input(message: Message, state: FSMContext) -> No
     )
 
 
-# ---------------- Review Alerts & Issues ----------------
+# ---------------- Review Alerts & Issues (F4 & F10) ----------------
 
 @router.callback_query(F.data.startswith("spk_rv:"))
 async def cb_speaker_review_issues(call: CallbackQuery) -> None:
-    """Displays Review Alerts for uncertain or problematic segments."""
+    """Displays Review Alerts for uncertain or problematic segments (F10)."""
     parts = call.data.split(":")
     token = parts[1]
     issue_idx = int(parts[2]) if len(parts) > 2 else 0
+    await render_review_issue(call, token, issue_idx)
+    await call.answer()
 
-    token_data = speaker_review_store.get_token(token)
-    if not token_data:
-        await call.answer("វគ្គបានផុតកំណត់។", show_alert=True)
+
+@router.callback_query(F.data.startswith("spk_io:"))
+async def cb_issue_original_sample(call: CallbackQuery) -> None:
+    """Watch original video sample for a specific review issue (F4)."""
+    _, token, issue_idx_str = call.data.split(":")
+    verified = await verify_speaker_token(call, token)
+    if not verified:
+        return
+    token_data, job, plan, rev = verified
+
+    issue_idx = int(issue_idx_str)
+    if issue_idx >= len(plan.review_issues):
+        await call.answer("មិនមានទិន្នន័យបញ្ហាឡើយ។", show_alert=True)
         return
 
-    job_id = token_data["job_id"]
-    rev_id = token_data["revision_id"]
-    plan = load_dubbing_plan(job_id, rev_id)
-    if not plan or not plan.review_issues:
-        await call.answer("មិនមានបញ្ហាដែលត្រូវពិនិត្យឡើយ។", show_alert=True)
-        return
-
-    issues = plan.review_issues
-    total_issues = len(issues)
-    idx = max(0, min(issue_idx, total_issues - 1))
-    issue = issues[idx]
-
+    issue = plan.review_issues[issue_idx]
     seg = plan.get_segment(issue.segment_id)
-    time_label = format_window_label(seg.start_ms, seg.end_ms) if seg else issue.segment_id
+    if not seg:
+        await call.answer("មិនមានទិន្នន័យឃ្លាឡើយ។", show_alert=True)
+        return
 
-    reason_labels = {
-        "unknown_speaker": "មិនទាន់កំណត់អ្នកនិយាយ",
-        "unscored_assignment": "ការវិភាគស្វ័យប្រវត្តគ្មានពិន្ទុច្បាស់លាស់ (Unscored)",
-        "low_speaker_confidence": "ភាពជឿជាក់លើអ្នកនិយាយទាប (Low Confidence)",
-        "competing_speakers": "មានអ្នកនិយាយប្រជែងគ្នាលើឈុតតែមួយ",
-        "missing_voice": "មិនទាន់បានបញ្ជាក់សំឡេង AI",
-        "invalid_voice": "សំឡេង AI មិនត្រឹមត្រូវ",
-        "overlapping_speech": "សំឡេងនិយាយជាន់គ្នា",
-    }
-    reason_km = reason_labels.get(issue.reason, issue.reason)
+    await call.answer("🎬 កំពុងរៀបចំវីដេអូដើមសម្រាប់ឈុតនេះ...")
+    w_start, w_end = review_window(seg.start_ms, seg.end_ms, plan.source_duration_ms, config.speaker_preview_context_ms)
+    start_sec = w_start / 1000.0
+    dur_sec = max(1.0, (w_end - w_start) / 1000.0)
 
-    status_km = "🔒 មិនទាន់ដោះស្រាយ" if issue.is_open else "✅ បានបញ្ជាក់យល់ព្រមរួច"
-    issue_text = (
-        f"⚠️ **ត្រូវពិនិត្យ ({idx + 1}/{total_issues})៖ {time_label}**\n\n"
-        f"• **ឃ្លា:** `{issue.segment_id}`\n"
-        f"• **មូលហេតុ:** {reason_km}\n"
-        f"• **ស្ថានភាព:** {status_km}\n\n"
-        f"សូមមើលវីដេអូ ឬកែសម្រួលដើម្បីដោះស្រាយបញ្ហានេះ។"
+    out_sample = workspace.get_speaker_sample_original(job.job_id, rev.revision_id, f"issue_{seg.segment_id}")
+    await render_timed_excerpt(
+        source_path=job.source_path,
+        assembled_audio_path=None,
+        output_preview_path=out_sample,
+        settings=rev.settings,
+        start_sec=start_sec,
+        duration_sec=dur_sec,
+        variant="original",
+        cancel_check=lambda: worker_pool.is_cancelled(job.job_id),
     )
+
+    if out_sample.exists():
+        video_input = FSInputFile(str(out_sample), filename="issue_orig.mp4")
+        await call.message.reply_video(
+            video=video_input,
+            caption=f"🎬 **វីដេអូដើម ({seg.segment_id}):** {format_window_label(w_start, w_end)}\n_{seg.source_text}_",
+            supports_streaming=True,
+        )
+
+
+@router.callback_query(F.data.startswith("spk_id:"))
+async def cb_issue_dubbed_sample(call: CallbackQuery) -> None:
+    """Watch dubbed video sample for a specific review issue (F4)."""
+    _, token, issue_idx_str = call.data.split(":")
+    verified = await verify_speaker_token(call, token)
+    if not verified:
+        return
+    token_data, job, plan, rev = verified
+
+    issue_idx = int(issue_idx_str)
+    if issue_idx >= len(plan.review_issues):
+        await call.answer("មិនមានទិន្នន័យបញ្ហាឡើយ។", show_alert=True)
+        return
+
+    issue = plan.review_issues[issue_idx]
+    seg = plan.get_segment(issue.segment_id)
+    trans = plan.get_translation(issue.segment_id)
+    if not seg:
+        await call.answer("មិនមានទិន្នន័យឃ្លាឡើយ។", show_alert=True)
+        return
+
+    await call.answer("🎙️ កំពុងបង្កើតគំរូសំឡេងថ្មីសម្រាប់ឈុតនេះ...")
+    w_start, w_end = review_window(seg.start_ms, seg.end_ms, plan.source_duration_ms, config.speaker_preview_context_ms)
+    start_sec = w_start / 1000.0
+    dur_sec = max(1.0, (w_end - w_start) / 1000.0)
+
+    # Synthesize clips
+    plan = await synthesize_and_fit_plan(
+        plan=plan,
+        job_id=job.job_id,
+        revision_id=rev.revision_id,
+        settings=rev.settings,
+        cancel_check=lambda: worker_pool.is_cancelled(job.job_id),
+        require_confirmed_voices=False,
+    )
+    save_dubbing_plan(job.job_id, rev.revision_id, plan)
+
+    timeline_wav = workspace.get_timeline_audio_path(job.job_id, rev.revision_id)
+    assemble_timeline_pcm(plan, timeline_wav)
+
+    sub_ass = workspace.get_subtitles_ass_path(job.job_id, rev.revision_id)
+    sub_srt = workspace.get_subtitles_srt_path(job.job_id, rev.revision_id)
+    build_timeline_subtitles(plan, sub_srt, sub_ass, rev.settings.subtitle_color, rev.settings.subtitle_position)
+
+    out_dubbed = workspace.get_speaker_sample_dubbed(job.job_id, rev.revision_id, f"issue_{seg.segment_id}", "audition")
+    await render_timed_excerpt(
+        source_path=job.source_path,
+        assembled_audio_path=timeline_wav,
+        output_preview_path=out_dubbed,
+        settings=rev.settings,
+        start_sec=start_sec,
+        duration_sec=dur_sec,
+        subtitles_ass_path=sub_ass,
+        variant="dubbed",
+        cancel_check=lambda: worker_pool.is_cancelled(job.job_id),
+    )
+
+    if out_dubbed.exists():
+        video_input = FSInputFile(str(out_dubbed), filename="issue_dubbed.mp4")
+        await call.message.reply_video(
+            video=video_input,
+            caption=(
+                f"🎬 **វីដេអូបកប្រែ ({seg.segment_id}):** {format_window_label(w_start, w_end)}\n"
+                f"**{trans.translated_text if trans else ''}**"
+            ),
+            supports_streaming=True,
+        )
+
+
+@router.callback_query(F.data.startswith("spk_ie:"))
+async def cb_issue_edit_speaker(call: CallbackQuery) -> None:
+    """Prompt user to reassign speaker for this issue's segment (F4)."""
+    _, token, issue_idx_str = call.data.split(":")
+    verified = await verify_speaker_token(call, token)
+    if not verified:
+        return
+    token_data, job, plan, rev = verified
+
+    issue_idx = int(issue_idx_str)
+    if issue_idx >= len(plan.review_issues):
+        await call.answer("មិនមានទិន្នន័យបញ្ហាឡើយ។", show_alert=True)
+        return
+
+    issue = plan.review_issues[issue_idx]
+    speaker_names = [p.speaker_id for p in plan.speakers]
+    if not speaker_names:
+        speaker_names = ["Speaker A", "Speaker B"]
 
     await safe_edit_message(
         call,
-        issue_text,
-        reply_markup=review_issue_keyboard(
-            token=token,
-            issue_idx=idx,
-            total_issues=total_issues,
-            allow_confirm=issue.allow_confirmation and issue.is_open,
-            segment_id=issue.segment_id,
-        ),
+        f"👤 **ជ្រើសរើសអ្នកនិយាយសម្រាប់ឃ្លា {issue.segment_id}:**\nសូមជ្រើសរើសតួអង្គដែលត្រូវនឹងសំឡេងពិតប្រាកដ៖",
+        reply_markup=speaker_assignment_picker_keyboard(token, issue.segment_id, speaker_names),
     )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("spk_sa:"))
+async def cb_issue_save_speaker_assignment(call: CallbackQuery) -> None:
+    """Assign selected speaker to segment (F4)."""
+    parts = call.data.split(":")
+    token = parts[1]
+    segment_id = parts[2]
+    new_spk = parts[3]
+
+    verified = await verify_speaker_token(call, token)
+    if not verified:
+        return
+    token_data, job, plan, rev = verified
+
+    # Update assignment
+    updated_assignments = []
+    found = False
+    for a in plan.speaker_assignments:
+        if a.segment_id == segment_id:
+            updated_assignments.append(
+                SpeakerAssignment(
+                    segment_id=a.segment_id,
+                    speaker_id=new_spk,
+                    evidence_key=a.evidence_key,
+                    origin="manual",
+                    confirmed_by_user=True,
+                    confidence=1.0,
+                    confidence_kind="calibrated",
+                )
+            )
+            found = True
+        else:
+            updated_assignments.append(a)
+
+    if not found:
+        updated_assignments.append(
+            SpeakerAssignment(
+                segment_id=segment_id,
+                speaker_id=new_spk,
+                evidence_key="manual",
+                origin="manual",
+                confirmed_by_user=True,
+                confidence=1.0,
+                confidence_kind="calibrated",
+            )
+        )
+
+    plan.speaker_assignments = updated_assignments
+
+    # Also update SourceSegment speaker_id
+    for s in plan.segments:
+        if s.segment_id == segment_id:
+            s.speaker_id = new_spk
+            s.speaker_assignment_origin = "manual"
+            s.needs_review = False
+
+    # Invalidate full preview digest
+    plan.preview_plan_digest = None
+    plan.full_preview_approved_digest = None
+
+    # Re-audit review issues
+    available_voices = await get_available_voices()
+    available_ids = {v["ShortName"] for v in available_voices}
+    audit_issues = audit_speaker_plan(plan, available_ids, config.speaker_require_unscored_review)
+    # Remove old unknown_speaker / competing issue for this segment
+    other_issues = [i for i in plan.review_issues if i.segment_id != segment_id and i.producer != "speaker_review"]
+    plan.review_issues = audit_issues + other_issues
+
+    save_dubbing_plan(job.job_id, rev.revision_id, plan)
+
+    speaker_review_store.record_decision(
+        job_id=job.job_id,
+        revision_id=rev.revision_id,
+        user_id=token_data["user_id"],
+        action="assign_speaker",
+        target_id=segment_id,
+        details={"speaker_id": new_spk},
+    )
+
+    await call.answer(f"✅ បានកំណត់អ្នកនិយាយ {new_spk} សម្រាប់ឃ្លា {segment_id}!")
+    await render_review_issue(call, token, 0)
+
+
+@router.callback_query(F.data.startswith("spk_it:"))
+async def cb_issue_edit_text(call: CallbackQuery, state: FSMContext) -> None:
+    """Trigger segment text editing from issue card (F4)."""
+    _, token, segment_id = call.data.split(":")
+    verified = await verify_speaker_token(call, token)
+    if not verified:
+        return
+    token_data, job, plan, rev = verified
+
+    s_seg = plan.get_segment(segment_id)
+    t_seg = plan.get_translation(segment_id)
+    if not s_seg:
+        await call.answer("មិនមានទិន្នន័យឃ្លាឡើយ។", show_alert=True)
+        return
+
+    await state.update_data(
+        job_id=job.job_id,
+        revision_id=rev.revision_id,
+        editing_segment_id=segment_id,
+        speaker_token=token,
+    )
+    await state.set_state(WizardStep.editing_segment_text)
+
+    prompt = (
+        f"✏️ **កែសម្រួលអត្ថបទឃ្លា {segment_id} ({s_seg.start_ms/1000.0:.1f}s - {s_seg.end_ms/1000.0:.1f}s)៖**\n\n"
+        f"• **ដើម៖** _{s_seg.source_text}_\n"
+        f"• **បកប្រែបច្ចុប្បន្ន៖** **{t_seg.translated_text if t_seg else ''}**\n\n"
+        f"សូមវាយអត្ថបទបកប្រែថ្មីផ្ញើមកទីនេះ៖"
+    )
+    await safe_edit_message(call, prompt)
     await call.answer()
 
 
 @router.callback_query(F.data.startswith("spk_ac:"))
 async def cb_speaker_acknowledge_issue(call: CallbackQuery) -> None:
-    """Acknowledge / confirm an uncertain issue where allowed."""
+    """Acknowledge / confirm an uncertain issue where allowed (F10)."""
     _, token, issue_idx_str = call.data.split(":")
-    token_data = speaker_review_store.get_token(token)
-    if not token_data:
-        await call.answer("វគ្គបានផុតកំណត់។", show_alert=True)
+    verified = await verify_speaker_token(call, token)
+    if not verified:
         return
+    token_data, job, plan, rev = verified
 
-    job_id = token_data["job_id"]
-    rev_id = token_data["revision_id"]
     issue_idx = int(issue_idx_str)
-
-    plan = load_dubbing_plan(job_id, rev_id)
-    if not plan or issue_idx >= len(plan.review_issues):
+    if issue_idx >= len(plan.review_issues):
         await call.answer("មិនមានទិន្នន័យឡើយ។", show_alert=True)
         return
 
@@ -716,11 +1080,11 @@ async def cb_speaker_acknowledge_issue(call: CallbackQuery) -> None:
             updated_issues.append(iss)
 
     plan.review_issues = updated_issues
-    save_dubbing_plan(job_id, rev_id, plan)
+    save_dubbing_plan(job.job_id, rev.revision_id, plan)
 
     speaker_review_store.record_decision(
-        job_id=job_id,
-        revision_id=rev_id,
+        job_id=job.job_id,
+        revision_id=rev.revision_id,
         user_id=token_data["user_id"],
         action="acknowledge_issue",
         target_id=issue.issue_id,
@@ -728,19 +1092,18 @@ async def cb_speaker_acknowledge_issue(call: CallbackQuery) -> None:
     )
 
     await call.answer("✅ បានបញ្ជាក់ឈុតនេះរួចរាល់!")
-    # Refresh issue view
-    call.data = f"spk_rv:{token}:{issue_idx}"
-    await cb_speaker_review_issues(call)
+    # F10: call render_review_issue directly without mutating frozen CallbackQuery!
+    await render_review_issue(call, token, issue_idx)
 
 
 @router.callback_query(F.data.startswith("spk_bk:"))
 async def cb_speaker_back_to_card(call: CallbackQuery) -> None:
-    """Return to Speaker Card from review or voice selection."""
+    """Return to Speaker Card from review or voice selection (F1 verified)."""
     _, token = call.data.split(":")
-    token_data = speaker_review_store.get_token(token)
-    if not token_data:
-        await call.answer("វគ្គបានផុតកំណត់។", show_alert=True)
+    verified = await verify_speaker_token(call, token)
+    if not verified:
         return
+    token_data, job, plan, rev = verified
 
     await render_speaker_card(
         call=call,
@@ -748,29 +1111,28 @@ async def cb_speaker_back_to_card(call: CallbackQuery) -> None:
         revision_id=token_data["revision_id"],
         user_id=token_data["user_id"],
         speaker_index=0,
+        plan=plan,
     )
     await call.answer()
 
 
-# ---------------- Full Preview & Approval ----------------
+# ---------------- Full Preview & Approval (F6, F8, F9) ----------------
 
 @router.callback_query(F.data.startswith("spk_fp:"))
 async def cb_speaker_full_preview(call: CallbackQuery) -> None:
-    """Generate and deliver full-timeline video preview for multi-speaker dubbing."""
+    """Generate and deliver full-timeline video preview (F6, F8, F9)."""
     _, token = call.data.split(":")
-    token_data = speaker_review_store.get_token(token)
-    if not token_data:
-        await call.answer("វគ្គបានផុតកំណត់។", show_alert=True)
+    verified = await verify_speaker_token(call, token)
+    if not verified:
         return
+    token_data, job, plan, rev = verified
 
     job_id = token_data["job_id"]
     rev_id = token_data["revision_id"]
 
-    job = job_storage.get_job(job_id)
-    plan = load_dubbing_plan(job_id, rev_id)
-    rev = job_storage.get_revision(job_id, rev_id)
-    if not job or not job.source_path or not plan or not rev:
-        await call.answer("មិនមានទិន្នន័យការងារឡើយ។", show_alert=True)
+    # F8: Check cancellation before starting
+    if worker_pool.is_cancelled(job_id):
+        await call.answer("ការងារត្រូវបានបោះបង់។", show_alert=True)
         return
 
     await call.answer("🎬 កំពុង Render Full Preview វីដេអូទាំងមូល...")
@@ -782,16 +1144,20 @@ async def cb_speaker_full_preview(call: CallbackQuery) -> None:
         job_id=job_id,
         revision_id=rev_id,
         settings=rev.settings,
+        cancel_check=lambda: worker_pool.is_cancelled(job_id),
         require_confirmed_voices=False,
     )
+    if worker_pool.is_cancelled(job_id):
+        return
 
-    # Step 2: Assemble timeline PCM audio & subtitles
+    # Step 2: Assemble timeline PCM audio & subtitles (F9: generate both SRT and ASS)
     timeline_wav = workspace.get_timeline_audio_path(job_id, rev_id)
     placements, sync_rep = assemble_timeline_pcm(plan, timeline_wav)
     save_sync_report(job_id, rev_id, sync_rep)
 
+    sub_srt = workspace.get_subtitles_srt_path(job_id, rev_id)
     sub_ass = workspace.get_subtitles_ass_path(job_id, rev_id)
-    build_timeline_subtitles(plan, sub_ass, sub_ass, rev.settings.subtitle_color, rev.settings.subtitle_position)
+    build_timeline_subtitles(plan, sub_srt, sub_ass, rev.settings.subtitle_color, rev.settings.subtitle_position)
 
     # Step 3: Render full preview MP4
     full_preview_path = workspace.get_full_preview_path(job_id, rev_id)
@@ -802,22 +1168,31 @@ async def cb_speaker_full_preview(call: CallbackQuery) -> None:
         settings=rev.settings,
         target_duration=plan.source_duration_ms / 1000.0,
         subtitles_ass_path=sub_ass,
+        cancel_check=lambda: worker_pool.is_cancelled(job_id),
     )
+    if worker_pool.is_cancelled(job_id):
+        return
 
     # Step 4: Compute content digest and record it
     digest = compute_plan_content_digest(plan, rev.settings)
     plan.preview_plan_digest = digest
     save_dubbing_plan(job_id, rev_id, plan)
 
+    # Generate completeness report (Addendum requirement 4)
+    generate_completeness_report(plan, rev.settings, job_id, rev_id)
+
+    # F9: Atomically persist subtitles_ass and subtitles_srt in revision!
     job_storage.update_revision(
         job_id=job_id,
         revision_id=rev_id,
         preview_path=str(full_preview_path),
         audio_path=str(timeline_wav),
         audio_duration=plan.source_duration_ms / 1000.0,
+        subtitles_srt=str(sub_srt),
+        subtitles_ass=str(sub_ass),
     )
 
-    if full_preview_path.exists():
+    if full_preview_path.exists() and not worker_pool.is_cancelled(job_id):
         video_input = FSInputFile(str(full_preview_path), filename="preview_full.mp4")
         await call.message.reply_video(
             video=video_input,
@@ -842,29 +1217,29 @@ async def cb_speaker_full_preview(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("spk_ap:"))
 async def cb_speaker_approve_final(call: CallbackQuery) -> None:
-    """Approve matching full preview and enqueue final export."""
+    """Approve matching full preview and enqueue final export (F6: validate all blocking issues)."""
     _, token = call.data.split(":")
-    token_data = speaker_review_store.get_token(token)
-    if not token_data:
-        await call.answer("វគ្គបានផុតកំណត់។", show_alert=True)
+    verified = await verify_speaker_token(call, token)
+    if not verified:
         return
+    token_data, job, plan, rev = verified
 
     job_id = token_data["job_id"]
     rev_id = token_data["revision_id"]
-
-    job = job_storage.get_job(job_id)
-    plan = load_dubbing_plan(job_id, rev_id)
-    rev = job_storage.get_revision(job_id, rev_id)
-    if not job or not plan or not rev:
-        await call.answer("មិនមានទិន្នន័យការងារឡើយ។", show_alert=True)
-        return
 
     available_voices = await get_available_voices()
     available_ids = {v["ShortName"] for v in available_voices}
 
     plan_digest = compute_plan_content_digest(plan, rev.settings)
 
-    # Validate final review gate
+    # F6: Validate content coverage across all stages
+    coverage_issues = validate_content_coverage(plan, rev.settings, require_clips_and_placements=True)
+    if coverage_issues:
+        first_issue = coverage_issues[0]
+        await call.answer(f"⚠️ មិនទាន់អាច Export បានទេ៖ {first_issue.message}", show_alert=True)
+        return
+
+    # F6: Validate final review gate (both review issues and plan issues)
     try:
         assert_final_ready(
             segment_ids=[s.segment_id for s in plan.segments],
@@ -873,7 +1248,8 @@ async def cb_speaker_approve_final(call: CallbackQuery) -> None:
             available_voice_ids=available_ids,
             issues=plan.review_issues,
             plan_digest=plan_digest,
-            approved_full_preview_digest=plan.preview_plan_digest,  # current generated preview matches
+            approved_full_preview_digest=plan.preview_plan_digest,
+            plan_issues=plan.issues,
         )
     except ReviewRequired as re:
         await call.answer(f"⚠️ មិនទាន់អាច Export បានទេ៖ {re}", show_alert=True)
@@ -905,11 +1281,16 @@ async def cb_speaker_approve_final(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("spk_cx:"))
 async def cb_speaker_cancel(call: CallbackQuery) -> None:
-    """Cancel job."""
+    """Cancel job (F1 & F8 verified)."""
     _, token = call.data.split(":")
     token_data = speaker_review_store.get_token(token)
     if not token_data:
         await call.answer("វគ្គបានផុតកំណត់។", show_alert=True)
+        return
+
+    # Ownership check
+    if call.from_user.id != token_data["user_id"]:
+        await call.answer("អ្នកមិនមានសិទ្ធិបោះបង់ការងារនេះឡើយ។", show_alert=True)
         return
 
     job_id = token_data["job_id"]

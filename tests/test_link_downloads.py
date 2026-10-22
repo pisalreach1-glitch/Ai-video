@@ -22,8 +22,13 @@ def test_public_url_ssrf_rejection():
         with pytest.raises(DownloadSecurityError):
             validate_public_url(url)
 
-def test_public_url_validation_success():
+def test_public_url_validation_success(monkeypatch):
     """Ensure standard public web URLs pass destination validation."""
+    import socket
+    monkeypatch.setattr(
+        "socket.getaddrinfo",
+        lambda host, port, *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))],
+    )
     safe_urls = [
         "https://www.google.com/test.mp4",
         "https://example.com/video.mp4",
@@ -34,6 +39,11 @@ def test_public_url_validation_success():
 @pytest.mark.asyncio
 async def test_download_byte_limit_enforcement(tmp_path, monkeypatch):
     """Ensure downloaded stream is cut off and cleaned if it exceeds max size without Content-Length."""
+    import socket
+    monkeypatch.setattr(
+        "socket.getaddrinfo",
+        lambda host, port, *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))],
+    )
     from app.services.downloader import download_direct_url
     dest = tmp_path / "oversized.mp4"
 
@@ -175,6 +185,11 @@ def test_get_or_create_cookiefile_from_env(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_resolve_douyin_canonical_redirect(monkeypatch):
     """Verify following redirects for short Douyin URLs to canonical URL."""
+    import socket
+    monkeypatch.setattr(
+        "socket.getaddrinfo",
+        lambda host, port, *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))],
+    )
     from app.services.downloader import resolve_douyin_canonical
 
     class MockRedirectResponse:
@@ -213,6 +228,11 @@ def test_extract_url_from_douyin_share_text():
 @pytest.mark.asyncio
 async def test_try_download_douyin_direct_resolver(tmp_path, monkeypatch):
     """Verify that Douyin universal resolver successfully streams media without cookies."""
+    import socket
+    monkeypatch.setattr(
+        "socket.getaddrinfo",
+        lambda host, port, *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))],
+    )
     from app.services.downloader import try_download_douyin_direct
     dest = tmp_path / "douyin_out.mp4"
 

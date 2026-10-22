@@ -111,12 +111,13 @@ async def _translate_single_batch_gemini(
     }
 
     prompt = (
-        "You are an expert video translator specializing in natural, concise Khmer (ភាសាខ្មែរ) dubbing.\n"
+        "You are an expert video translator specializing in natural, faithful Khmer (ភាសាខ្មែរ) dubbing.\n"
         "Translate each of the following timed video utterances into natural, fluent Khmer.\n"
         "CRITICAL RULES:\n"
         "1. Keep EXACTLY the same segment IDs ('id'). Do not skip, merge, rename, or reorder any IDs.\n"
-        "2. Provide natural, concise Khmer phrasing that speaks smoothly within the time slot.\n"
-        "3. Preserve factual meaning, names, quantities, and steps accurately.\n\n"
+        "2. Provide natural Khmer phrasing that speaks smoothly within the time slot.\n"
+        "3. Preserve full factual meaning, all actions, names, numbers, quantities, units, conditions, negation (e.g. 'do not', 'never'), and ordered steps accurately. Never omit critical details or instructions.\n"
+        "4. Proper names, technical terms, and international brands may remain in their source form when appropriate.\n\n"
         f"{json.dumps(request_payload, ensure_ascii=False, indent=2)}"
     )
 
@@ -259,21 +260,25 @@ async def shorten_single_segment_khmer(
     if not api_key:
         return current_khmer
 
-    from google import genai
-    from google.genai import types
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        logger.warning("google-genai SDK not installed; returning original text")
+        return current_khmer
 
     prompt = (
         "You are an expert Khmer dubbing translator and voiceover editor.\n"
         "A video segment is currently too long to read and collides with the next speaker.\n"
-        "Shorten the Khmer translation into a very concise, punchy, natural spoken Khmer phrase (2 to 5 words max) "
-        f"that conveys the essential meaning and can be comfortably spoken in under {target_duration_s:.1f} seconds.\n\n"
+        f"Rephrase the Khmer translation into a more concise, natural spoken Khmer phrase that preserves all essential facts, numbers, actions, and negations, fitting comfortably in under {target_duration_s:.1f} seconds.\n\n"
         f"Context:\n"
         f"- Original source speech: {source_text}\n"
         f"- Current Khmer translation: {current_khmer}\n"
         f"- Maximum target duration: {target_duration_s:.1f}s\n\n"
         "CRITICAL RULES:\n"
-        "1. Respond ONLY with the shortened Khmer text in UTF-8.\n"
-        "2. Do NOT include markdown, quotes, explanations, or any language other than Khmer."
+        "1. Respond ONLY with the concise Khmer text in UTF-8.\n"
+        "2. Do NOT omit critical facts, quantities, numbers, or negations.\n"
+        "3. Do NOT include markdown, quotes, explanations, or any language other than Khmer."
     )
 
     def _call():
@@ -325,9 +330,13 @@ async def shorten_overlong_segments(
     if not api_key:
         return {}
 
-    from google import genai
-    from google.genai import types
-    from pydantic import BaseModel
+    try:
+        from google import genai
+        from google.genai import types
+        from pydantic import BaseModel
+    except ImportError:
+        logger.warning("google-genai or pydantic SDK not installed; returning empty dict")
+        return {}
 
     class ShortenItem(BaseModel):
         id: str
@@ -347,11 +356,11 @@ async def shorten_overlong_segments(
         prompt = (
             "You are an expert Khmer dubbing translator and voiceover editor.\n"
             "Each of the following video segments is too long to speak in the allotted time slot and collides with the next sentence.\n"
-            "For each segment, produce a very concise, punchy, natural spoken Khmer phrase (2 to 5 words max) "
-            "that preserves the essential meaning and fits within the target seconds.\n\n"
+            "For each segment, produce a concise, natural spoken Khmer phrase that preserves all essential meaning (including numbers, negations, and key actions) and fits within the target seconds.\n\n"
             "CRITICAL RULES:\n"
             "1. Keep EXACTLY the same segment IDs ('id').\n"
-            "2. Provide only concise Khmer phrasing.\n\n"
+            "2. Preserve all factual meaning, numbers, and negations accurately.\n"
+            "3. Provide only concise Khmer phrasing.\n\n"
             f"{json.dumps(batch, ensure_ascii=False, indent=2)}"
         )
 

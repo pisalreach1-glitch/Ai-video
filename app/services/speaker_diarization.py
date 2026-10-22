@@ -56,7 +56,11 @@ async def run_speaker_diarization(
 
         target_device = torch.device(device if torch.cuda.is_available() and device == "cuda" else "cpu")
         try:
-            pipeline = Pipeline.from_pretrained(model_name, use_auth_token=token or None)
+            try:
+                pipeline = Pipeline.from_pretrained(model_name, token=token or None)
+            except TypeError:
+                pipeline = Pipeline.from_pretrained(model_name, use_auth_token=token or None)
+
             if pipeline is None:
                 raise DiarizationUnavailableError(
                     f"Could not load diarization model '{model_name}'. Check HF_TOKEN."
@@ -71,7 +75,12 @@ async def run_speaker_diarization(
         speaker_map: dict[str, str] = {}
         speaker_counter = 1
 
-        for turn, _, speaker in diarization.itertracks(yield_label=True):
+        # Community-1 or pyannote-audio wrapper vs Annotation
+        annotation = getattr(diarization, "speaker_diarization", diarization)
+        if not hasattr(annotation, "itertracks"):
+            raise DiarizationUnavailableError("Diarization output does not expose itertracks()")
+
+        for turn, _, speaker in annotation.itertracks(yield_label=True):
             if speaker not in speaker_map:
                 letter = chr(64 + speaker_counter) if speaker_counter <= 26 else f"S{speaker_counter}"
                 speaker_map[speaker] = f"Speaker {letter}"

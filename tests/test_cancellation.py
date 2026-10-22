@@ -21,13 +21,23 @@ def test_kill_process_tree_terminates_all_children():
 
     try:
         proc = psutil.Process(parent.pid)
-        children = proc.children(recursive=True)
+        children = []
+        for _ in range(20):
+            if not proc.is_running():
+                break
+            children = proc.children(recursive=True)
+            if children:
+                break
+            time.sleep(0.1)
         assert len(children) >= 1
         child_pid = children[0].pid
 
         # Kill tree
         kill_process_tree(parent.pid)
-        time.sleep(0.5)
+        for _ in range(20):
+            if not psutil.pid_exists(parent.pid) and not psutil.pid_exists(child_pid):
+                break
+            time.sleep(0.1)
 
         assert not psutil.pid_exists(parent.pid)
         assert not psutil.pid_exists(child_pid)

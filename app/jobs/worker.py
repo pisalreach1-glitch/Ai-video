@@ -173,6 +173,23 @@ class WorkerPool:
                     )
 
             elif task_type == "final":
+                if mode == "source_timed":
+                    from app.storage.dubbing import load_dubbing_plan
+                    from app.services.content_coverage import validate_content_coverage
+                    plan = load_dubbing_plan(job_id, revision_id)
+                    if not plan or plan.has_blocking_issues:
+                        logger.error(f"Cannot render final for job {job_id}: plan has unresolved blocking issues.")
+                        job_storage.set_job_status(job_id, JobState.FAILED, error_message="Unresolved blocking issues exist.")
+                        job_storage.complete_task(job_id, "failed")
+                        return
+
+                    coverage_issues = validate_content_coverage(plan, settings, require_clips_and_placements=True)
+                    if coverage_issues:
+                        logger.error(f"Cannot render final for job {job_id}: coverage validation failed: {coverage_issues[0].message}")
+                        job_storage.set_job_status(job_id, JobState.FAILED, error_message=coverage_issues[0].message)
+                        job_storage.complete_task(job_id, "failed")
+                        return
+
                 job_storage.set_job_status(job_id, JobState.RENDERING)
                 final_dest = workspace.get_final_video_path(job_id, revision_id)
 
