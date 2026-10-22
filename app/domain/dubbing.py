@@ -142,6 +142,7 @@ class DubbingIssue:
     issue_type: str # "too_long" | "collision" | "overrun" | "missing_translation"
     message: str
     severity: str = "blocking" # "blocking" | "warning"
+    producer: str = "fit" # "fit" | "sync_validation" | "speaker_review"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -153,6 +154,7 @@ class DubbingIssue:
             issue_type=str(data["issue_type"]),
             message=str(data["message"]),
             severity=str(data.get("severity", "blocking")),
+            producer=str(data.get("producer", "fit")),
         )
 
 @dataclass
@@ -167,8 +169,11 @@ class DubbingPlan:
     clips: list[DubClip] = field(default_factory=list)
     placements: list[Placement] = field(default_factory=list)
     issues: list[DubbingIssue] = field(default_factory=list)
-    # Multi-speaker extensions (Schema version 2)
+    # Multi-speaker extensions & Sync policy
     schema_version: int = 2
+    plan_version: int = 1
+    sync_policy_metadata: dict[str, Any] = field(default_factory=dict)
+    preview_artifact_identity: dict[str, Any] = field(default_factory=dict)
     speaker_mode: str = "single" # "single" | "multi"
     source_analysis_key: str = ""
     speakers: list[SpeakerProfile] = field(default_factory=list)
@@ -234,6 +239,9 @@ class DubbingPlan:
             "placements": [p.to_dict() for p in self.placements],
             "issues": [i.to_dict() for i in self.issues],
             "schema_version": self.schema_version,
+            "plan_version": self.plan_version,
+            "sync_policy_metadata": self.sync_policy_metadata,
+            "preview_artifact_identity": self.preview_artifact_identity,
             "speaker_mode": self.speaker_mode,
             "source_analysis_key": self.source_analysis_key,
             "speakers": [spk.to_dict() for spk in self.speakers],
@@ -267,6 +275,9 @@ class DubbingPlan:
             placements=[Placement.from_dict(p) for p in data.get("placements", [])],
             issues=[DubbingIssue.from_dict(i) for i in data.get("issues", [])],
             schema_version=int(data.get("schema_version", 2 if "speakers" in data else 1)),
+            plan_version=int(data.get("plan_version", 1)),
+            sync_policy_metadata=data.get("sync_policy_metadata", {}),
+            preview_artifact_identity=data.get("preview_artifact_identity", {}),
             speaker_mode=str(data.get("speaker_mode", "single")),
             source_analysis_key=str(data.get("source_analysis_key", "")),
             speakers=[SpeakerProfile.from_dict(spk) for spk in data.get("speakers", [])],

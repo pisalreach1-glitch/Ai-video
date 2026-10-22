@@ -73,6 +73,8 @@ async def apply_atempo(
     tempo: float,
     sample_rate: int = 48000,
     channels: int = 2,
+    cancel_check: Callable[[], bool] | None = None,
+    on_pid: Callable[[int], None] | None = None,
 ) -> Path:
     """Apply mild tempo adjustment using FFmpeg atempo filter without pitch alteration."""
     dest = Path(output_wav)
@@ -87,7 +89,15 @@ async def apply_atempo(
         "-ac", str(channels),
         str(dest),
     ]
-    res = await run_process(cmd, timeout=30.0)
+    res = await run_process(cmd, timeout=30.0, cancel_check=cancel_check, on_pid=on_pid)
+    if res.cancelled:
+        if dest.exists():
+            dest.unlink(missing_ok=True)
+        raise asyncio.CancelledError("atempo_cancelled")
+    if res.timed_out:
+        if dest.exists():
+            dest.unlink(missing_ok=True)
+        raise TimeoutError("atempo_timed_out")
     if res.returncode != 0 or not dest.exists():
         raise RuntimeError(f"Failed to apply atempo filter: {res.stderr[:200]}")
     return dest

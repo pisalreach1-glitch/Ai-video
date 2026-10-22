@@ -111,6 +111,8 @@ def compute_plan_content_digest(plan: DubbingPlan, settings: VoiceSettings) -> s
         "schema": 2,
         "mode": plan.mode,
         "speaker_mode": plan.speaker_mode,
+        "plan_version": getattr(plan, "plan_version", 1),
+        "sync_policy": getattr(plan, "sync_policy_metadata", {}),
         "source_fingerprint": plan.source_fingerprint,
         "analysis_key": plan.source_analysis_key,
         "segments": segments_payload,

@@ -101,6 +101,9 @@ def test_coverage_succeeds_with_complete_plan(tmp_path, monkeypatch):
     from app.storage.workspaces import workspace
     monkeypatch.setattr(workspace, "get_revision_dir", lambda jid, rev: tmp_path)
 
+    a_wav = tmp_path / "a.wav"
+    a_wav.write_bytes(b"dummy audio data")
+
     plan = DubbingPlan(
         source_duration_ms=2000,
         segments=[
@@ -115,7 +118,7 @@ def test_coverage_succeeds_with_complete_plan(tmp_path, monkeypatch):
             ),
         ],
         clips=[
-            DubClip(segment_id="s001", tts_cache_key="k1", raw_audio_path="a.wav", raw_duration_ms=800, status="ready"),
+            DubClip(segment_id="s001", tts_cache_key="k1", raw_audio_path=str(a_wav), raw_duration_ms=800, status="ready"),
         ],
         placements=[
             Placement(segment_id="s001", timeline_start_ms=0, slot_end_ms=1000, speech_end_ms=800, start_sample=0, sample_count=19200),
@@ -403,7 +406,7 @@ async def test_multi_speaker_unassigned_audition_generates_audible_clips(monkeyp
     async def mock_decode(mp3_path, wav_path, sample_rate=48000, channels=2, trim_silence=True):
         Path(wav_path).write_bytes(b"dummy wav data")
 
-    async def mock_fit(clip, source_segment, max_tempo=1.25, sample_rate=48000, available_slot_ms=None):
+    async def mock_fit(clip, slot, policy, output_dir, tempo_writer, cancel_check=None):
         clip.status = "ready"
         clip.raw_duration_ms = 1500
         clip.fitted_duration_ms = 1500
@@ -412,7 +415,7 @@ async def test_multi_speaker_unassigned_audition_generates_audible_clips(monkeyp
 
     monkeypatch.setattr("app.services.dubbing.generate_narration", mock_tts)
     monkeypatch.setattr("app.services.dubbing.decode_mp3_to_wav", mock_decode)
-    monkeypatch.setattr("app.services.dubbing.fit_clip", mock_fit)
+    monkeypatch.setattr("app.services.dubbing.fit_clip_to_slot", mock_fit)
     monkeypatch.setattr("app.services.dubbing.get_available_voices", AsyncMock(return_value=[{"ShortName": "km-KH-PisethNeural"}]))
 
     # When require_confirmed_voices=False (audition / preview)

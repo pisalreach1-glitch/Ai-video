@@ -104,13 +104,14 @@ def validate_content_coverage(
                     severity="blocking",
                 )
             )
-        elif t.status in ("failed", "pending"):
+        elif t.status in ("failed", "pending", "needs_review") or (require_clips_and_placements and t.status != "ready"):
             issues.append(
                 DubbingIssue(
                     segment_id=sid,
                     issue_type="unready_translation",
                     message=f"អត្ថបទបកប្រែសម្រាប់ឃ្លា {sid} មិនទាន់រួចរាល់ ({t.status})។",
                     severity="blocking",
+                    producer="coverage",
                 )
             )
 
@@ -124,6 +125,7 @@ def validate_content_coverage(
                         issue_type="missing_speaker_assignment",
                         message=f"ឃ្លា {sid} មិនទាន់បានកំណត់អ្នកនិយាយឡើយ។",
                         severity="blocking",
+                        producer="coverage",
                     )
                 )
 
@@ -137,6 +139,7 @@ def validate_content_coverage(
                         issue_type="missing_clip",
                         message=f"ខ្វះសំឡេងសម្រាប់ឃ្លា {sid}។",
                         severity="blocking",
+                        producer="coverage",
                     )
                 )
             elif clip.status == "too_long":
@@ -146,6 +149,7 @@ def validate_content_coverage(
                         issue_type="too_long",
                         message=f"សំឡេងឃ្លា {sid} វែងលើសពេលវេលាក្នុងវីដេអូដើម។",
                         severity="blocking",
+                        producer="coverage",
                     )
                 )
             elif clip.status == "failed":
@@ -155,8 +159,22 @@ def validate_content_coverage(
                         issue_type="failed_clip",
                         message=f"ការបង្កើតសំឡេងឃ្លា {sid} បានបរាជ័យ។",
                         severity="blocking",
+                        producer="coverage",
                     )
                 )
+            else:
+                # Require real, nonempty audio artifacts
+                c_path = Path(clip.fitted_audio_path or clip.raw_audio_path)
+                if not c_path.exists() or c_path.stat().st_size == 0:
+                    issues.append(
+                        DubbingIssue(
+                            segment_id=sid,
+                            issue_type="empty_clip_artifact",
+                            message=f"ឯកសារសំឡេងឃ្លា {sid} មិនមាន ឬទទេស្អាត។",
+                            severity="blocking",
+                            producer="coverage",
+                        )
+                    )
 
             # 5. Placement check
             placement = placement_map.get(sid)
@@ -167,6 +185,7 @@ def validate_content_coverage(
                         issue_type="missing_placement",
                         message=f"មិនទាន់បានរៀបចំទីតាំងសំឡេងលើបន្ទាត់ពេលវេលាសម្រាប់ឃ្លា {sid}។",
                         severity="blocking",
+                        producer="coverage",
                     )
                 )
             elif placement.speech_end_ms > plan.source_duration_ms:
@@ -176,6 +195,7 @@ def validate_content_coverage(
                         issue_type="overrun",
                         message=f"សំឡេងឃ្លា {sid} ហួសប្រវែងវីដេអូដើម។",
                         severity="blocking",
+                        producer="coverage",
                     )
                 )
 

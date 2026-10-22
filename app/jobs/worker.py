@@ -190,6 +190,15 @@ class WorkerPool:
                         job_storage.complete_task(job_id, "failed")
                         return
 
+                    if plan.speaker_mode == "multi" and plan.full_preview_approved_digest:
+                        from app.services.speaker_review import compute_plan_content_digest
+                        current_digest = compute_plan_content_digest(plan, settings)
+                        if plan.full_preview_approved_digest != current_digest:
+                            logger.error(f"Cannot render final for job {job_id}: approved digest mismatch (plan modified after approval).")
+                            job_storage.set_job_status(job_id, JobState.FAILED, error_message="Plan was modified after preview approval.")
+                            job_storage.complete_task(job_id, "failed")
+                            return
+
                 job_storage.set_job_status(job_id, JobState.RENDERING)
                 final_dest = workspace.get_final_video_path(job_id, revision_id)
 

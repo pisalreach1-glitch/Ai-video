@@ -274,7 +274,15 @@ async def handle_segment_edit_text(message: Message, state: FSMContext) -> None:
 async def cb_dubbing_proceed(call: CallbackQuery, state: FSMContext | None = None) -> None:
     _, job_id, rev_str = call.data.split(":")
     revision_id = int(rev_str)
+    await execute_dubbing_proceed(call, job_id, revision_id, state=state)
 
+
+async def execute_dubbing_proceed(
+    call: CallbackQuery,
+    job_id: str,
+    revision_id: int,
+    state: FSMContext | None = None,
+) -> None:
     if not await verify_callback_job(call, job_id, expected_rev=revision_id):
         return
 
@@ -313,9 +321,9 @@ async def cb_dubbing_proceed(call: CallbackQuery, state: FSMContext | None = Non
             s_seg = plan.get_segment(first_overlong.segment_id)
             t_seg = plan.get_translation(first_overlong.segment_id)
 
-            first_idx = next((i for i, s in enumerate(plan.segments) if s.segment_id == first_overlong.segment_id), 0)
-            next_s = plan.segments[first_idx + 1] if first_idx + 1 < len(plan.segments) else None
-            slot_s = ((next_s.start_ms - s_seg.start_ms) if next_s else (plan.source_duration_ms - s_seg.start_ms)) / 1000.0 if s_seg else 0.0
+            slot_s = (s_seg.duration_ms / 1000.0) if s_seg else 0.0
+            actual_s = first_overlong.raw_duration_ms / 1000.0
+            lag_s = max(0.0, actual_s - slot_s)
 
             job_storage.set_job_status(job_id, JobState.AWAITING_FIT_RESOLUTION, stage="awaiting_fit_resolution")
             await safe_edit_message(
@@ -323,8 +331,9 @@ async def cb_dubbing_proceed(call: CallbackQuery, state: FSMContext | None = Non
                 texts.DUBBING_TOO_LONG_ALERT.format(
                     max_tempo=config.dub_max_tempo,
                     segment_id=first_overlong.segment_id,
-                    actual_dur=first_overlong.raw_duration_ms / 1000.0,
+                    actual_dur=actual_s,
                     slot_dur=slot_s,
+                    end_lag=lag_s,
                     text=t_seg.translated_text if t_seg else "",
                 ),
                 reply_markup=dubbing_fit_resolution_keyboard(
@@ -432,16 +441,13 @@ async def cb_dubbing_shorten_single_segment(call: CallbackQuery, state: FSMConte
         await call.answer("មិនអាចរកឃើញឃ្លានេះឡើយ។", show_alert=True)
         return
 
-    seg_idx = next((i for i, s in enumerate(plan.segments) if s.segment_id == segment_id), 0)
-    next_s = plan.segments[seg_idx + 1] if seg_idx + 1 < len(plan.segments) else None
-    avail_ms = (next_s.start_ms - s_seg.start_ms) if next_s else (plan.source_duration_ms - s_seg.start_ms)
-    avail_s = max(avail_ms / 1000.0, 1.0)
+    target_s = max(s_seg.duration_ms / 1000.0, 1.0) if s_seg else 1.0
 
     try:
         shortened = await shorten_single_segment_khmer(
             source_text=s_seg.source_text,
             current_khmer=t_seg.translated_text,
-            target_duration_s=avail_s,
+            target_duration_s=target_s,
         )
     except Exception as e:
         logger.error(f"Failed to shorten segment {segment_id}: {e}")
@@ -455,8 +461,7 @@ async def cb_dubbing_shorten_single_segment(call: CallbackQuery, state: FSMConte
     save_dubbing_plan(job_id, revision_id, plan)
 
     invalidate_segment_tts(job_id, revision_id, segment_id)
-    call.data = f"d_proc:{job_id}:{revision_id}"
-    await cb_dubbing_proceed(call, state=state)
+    await execute_dubbing_proceed(call, job_id, revision_id, state=state)
 
 
 @router.callback_query(F.data.startswith("d_sha:"))

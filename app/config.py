@@ -29,6 +29,10 @@ class Settings:
     source_asr_compute_type: str = "int8"
     dub_sample_rate: int = 48000
     dub_max_tempo: float = 1.15
+    dub_sync_start_tolerance_ms: int = 80
+    dub_sync_end_tolerance_ms: int = 120
+    dub_sync_filter_duration_tolerance_ms: int = 80
+    dub_sync_guard_ms: int = 0
     dub_max_segments: int = 120
     translation_provider: str = "gemini"
     telegram_api_id: int | None = None
@@ -115,6 +119,10 @@ def load_settings() -> Settings:
         source_asr_compute_type=os.getenv("SOURCE_ASR_COMPUTE_TYPE", "int8"),
         dub_sample_rate=int(os.getenv("DUB_SAMPLE_RATE", "48000")),
         dub_max_tempo=float(os.getenv("DUB_MAX_TEMPO", "1.15")),
+        dub_sync_start_tolerance_ms=int(os.getenv("DUB_SYNC_START_TOLERANCE_MS", "80")),
+        dub_sync_end_tolerance_ms=int(os.getenv("DUB_SYNC_END_TOLERANCE_MS", "120")),
+        dub_sync_filter_duration_tolerance_ms=int(os.getenv("DUB_SYNC_FILTER_DURATION_TOLERANCE_MS", "80")),
+        dub_sync_guard_ms=int(os.getenv("DUB_SYNC_GUARD_MS", "0")),
         dub_max_segments=int(os.getenv("DUB_MAX_SEGMENTS", "120")),
         translation_provider=os.getenv("TRANSLATION_PROVIDER", "gemini" if os.getenv("GEMINI_API_KEY") else "manual"),
         telegram_api_id=int(os.getenv("TELEGRAM_API_ID").strip()) if os.getenv("TELEGRAM_API_ID") and os.getenv("TELEGRAM_API_ID").strip().isdigit() else None,
