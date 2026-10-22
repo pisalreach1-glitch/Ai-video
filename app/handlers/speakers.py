@@ -524,6 +524,7 @@ async def cb_speaker_dubbed_sample(call: CallbackQuery) -> None:
     window_key = f"{w_start}_{w_end}"
 
     # Synthesize clips (allowing unconfirmed voices for this audition trial)
+    audition_seg = s0 if 's0' in locals() and s0 else (plan.segments[0] if plan.segments else None)
     plan = await synthesize_and_fit_plan(
         plan=plan,
         job_id=job_id,
@@ -531,8 +532,14 @@ async def cb_speaker_dubbed_sample(call: CallbackQuery) -> None:
         settings=rev.settings,
         cancel_check=lambda: worker_pool.is_cancelled(job_id),
         require_confirmed_voices=False,
+        audition_speaker_id=spk_id,
+        audition_segment_id=audition_seg.segment_id if audition_seg else None,
     )
     if worker_pool.is_cancelled(job_id):
+        return
+
+    if not plan.clips:
+        await call.answer("⚠️ មិនមានសំឡេងបកប្រែដែលត្រូវបានបង្កើតឡើយ។", show_alert=True)
         return
 
     save_dubbing_plan(job_id, rev_id, plan)
@@ -857,6 +864,8 @@ async def cb_issue_dubbed_sample(call: CallbackQuery) -> None:
     dur_sec = max(1.0, (w_end - w_start) / 1000.0)
 
     # Synthesize clips
+    issue_asgn = plan.get_assignment(seg.segment_id)
+    audition_spk = (issue_asgn.speaker_id if issue_asgn and issue_asgn.speaker_id else (plan.speakers[0].speaker_id if plan.speakers else "Speaker A"))
     plan = await synthesize_and_fit_plan(
         plan=plan,
         job_id=job.job_id,
@@ -864,7 +873,16 @@ async def cb_issue_dubbed_sample(call: CallbackQuery) -> None:
         settings=rev.settings,
         cancel_check=lambda: worker_pool.is_cancelled(job.job_id),
         require_confirmed_voices=False,
+        audition_speaker_id=audition_spk,
+        audition_segment_id=seg.segment_id,
     )
+    if worker_pool.is_cancelled(job.job_id):
+        return
+
+    if not plan.clips:
+        await call.answer("⚠️ មិនមានសំឡេងបកប្រែដែលត្រូវបានបង្កើតឡើយ។", show_alert=True)
+        return
+
     save_dubbing_plan(job.job_id, rev.revision_id, plan)
 
     timeline_wav = workspace.get_timeline_audio_path(job.job_id, rev.revision_id)
@@ -1148,6 +1166,10 @@ async def cb_speaker_full_preview(call: CallbackQuery) -> None:
         require_confirmed_voices=False,
     )
     if worker_pool.is_cancelled(job_id):
+        return
+
+    if not plan.clips:
+        await call.answer("⚠️ មិនអាច Render Preview បានទេ ព្រោះគ្មានសំឡេងបកប្រែ។", show_alert=True)
         return
 
     # Step 2: Assemble timeline PCM audio & subtitles (F9: generate both SRT and ASS)

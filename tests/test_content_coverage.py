@@ -372,3 +372,92 @@ async def test_f10_render_review_issue_no_frozen_mutation():
     # Calling render_review_issue directly must not raise ValidationError or mutate call.data
     await render_review_issue(call, token, 0)
     assert call.message.edit_text.called or call.message.edit_caption.called
+
+
+# ---------------------------------------------------------------------------
+# Multi-Speaker Audition Fallback Voice & Coverage Safety Tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_multi_speaker_unassigned_audition_generates_audible_clips(monkeypatch, tmp_path):
+    """Verify that in multi-speaker mode with unassigned speakers, audition/preview
+    synthesizes audible clips using fallback voice while preserving blocking issues."""
+    from app.services.dubbing import synthesize_and_fit_plan
+    from app.domain.speakers import SpeakerProfile
+
+    plan = DubbingPlan(
+        speaker_mode="multi",
+        speakers=[SpeakerProfile(speaker_id="Speaker A", display_name="Speaker A", analysis_key="default")],
+        speaker_assignments=[SpeakerAssignment(segment_id="s001", speaker_id=None, evidence_key="k1")],
+        speaker_voice_map={"Speaker A": VoiceChoice(voice_id="km-KH-PisethNeural", confirmed=False)},
+        segments=[SourceSegment(segment_id="s001", start_ms=0, end_ms=2000, source_text="Hello")],
+        translations=[TranslatedSegment(segment_id="s001", translated_text="សួស្តី")],
+    )
+
+    async def mock_tts(text, voice="km-KH-SreymomNeural", rate="+0%", output_audio_path="voice.mp3", cancel_check=None):
+        p = Path(output_audio_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"dummy mp3 data")
+        return p, 1.5, [{"start": 0.0, "end": 1.5, "text": text}]
+
+    async def mock_decode(mp3_path, wav_path, sample_rate=48000, channels=2, trim_silence=True):
+        Path(wav_path).write_bytes(b"dummy wav data")
+
+    async def mock_fit(clip, source_segment, max_tempo=1.25, sample_rate=48000, available_slot_ms=None):
+        clip.status = "ready"
+        clip.raw_duration_ms = 1500
+        clip.fitted_duration_ms = 1500
+        clip.fitted_audio_path = clip.raw_audio_path
+        return clip
+
+    monkeypatch.setattr("app.services.dubbing.generate_narration", mock_tts)
+    monkeypatch.setattr("app.services.dubbing.decode_mp3_to_wav", mock_decode)
+    monkeypatch.setattr("app.services.dubbing.fit_clip", mock_fit)
+    monkeypatch.setattr("app.services.dubbing.get_available_voices", AsyncMock(return_value=[{"ShortName": "km-KH-PisethNeural"}]))
+
+    # When require_confirmed_voices=False (audition / preview)
+    res_plan = await synthesize_and_fit_plan(
+        plan=plan,
+        job_id="test_job",
+        revision_id=1,
+        settings=VoiceSettings(),
+        require_confirmed_voices=False,
+    )
+
+    # Must have generated 1 clip for preview
+    assert len(res_plan.clips) == 1
+    assert res_plan.clips[0].segment_id == "s001"
+    # But MUST preserve blocking issue so final export remains blocked
+    assert any(i.issue_type == "unknown_speaker" and i.severity == "blocking" for i in res_plan.issues)
+
+
+@pytest.mark.asyncio
+async def test_multi_speaker_unassigned_final_export_blocks_clips(monkeypatch):
+    """Verify that during final export (require_confirmed_voices=True), unassigned
+    segments are strictly not synthesized and remain blocking."""
+    from app.services.dubbing import synthesize_and_fit_plan
+    from app.domain.speakers import SpeakerProfile
+
+    plan = DubbingPlan(
+        speaker_mode="multi",
+        speakers=[SpeakerProfile(speaker_id="Speaker A", display_name="Speaker A", analysis_key="default")],
+        speaker_assignments=[SpeakerAssignment(segment_id="s001", speaker_id=None, evidence_key="k1")],
+        speaker_voice_map={"Speaker A": VoiceChoice(voice_id="km-KH-PisethNeural", confirmed=False)},
+        segments=[SourceSegment(segment_id="s001", start_ms=0, end_ms=2000, source_text="Hello")],
+        translations=[TranslatedSegment(segment_id="s001", translated_text="សួស្តី")],
+    )
+
+    monkeypatch.setattr("app.services.dubbing.get_available_voices", AsyncMock(return_value=[{"ShortName": "km-KH-PisethNeural"}]))
+
+    res_plan = await synthesize_and_fit_plan(
+        plan=plan,
+        job_id="test_job",
+        revision_id=1,
+        settings=VoiceSettings(),
+        require_confirmed_voices=True,
+    )
+
+    # In strict final mode, 0 clips because speaker is unassigned
+    assert len(res_plan.clips) == 0
+    assert any(i.issue_type == "unknown_speaker" and i.severity == "blocking" for i in res_plan.issues)
+

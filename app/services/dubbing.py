@@ -27,7 +27,9 @@ async def synthesize_and_fit_plan(
     revision_id: int,
     settings: VoiceSettings,
     cancel_check: Callable[[], bool] | None = None,
-    require_confirmed_voices: bool = True,
+    require_confirmed_voices: bool = False,
+    audition_speaker_id: str | None = None,
+    audition_segment_id: str | None = None,
 ) -> DubbingPlan:
     """
     Synthesizes each translated segment, decodes to PCM WAV, applies tempo fitting,
@@ -35,8 +37,12 @@ async def synthesize_and_fit_plan(
     In multi-speaker mode, resolves the chosen voice for each segment individually.
     """
     plan.clips.clear()
-    # Retain non-fit issues instead of wiping everything
-    plan.issues = [i for i in plan.issues if i.issue_type not in ("too_long", "collision", "overrun")]
+    # Retain non-synthesis issues instead of accumulating duplicates
+    synthesis_issue_types = {
+        "too_long", "collision", "overrun", "unknown_speaker",
+        "missing_translation", "missing_source", "missing_voice", "invalid_voice"
+    }
+    plan.issues = [i for i in plan.issues if i.issue_type not in synthesis_issue_types]
 
     available_voices = await get_available_voices()
     available_voice_ids = {v["ShortName"] for v in available_voices}
@@ -67,33 +73,53 @@ async def synthesize_and_fit_plan(
 
         # Resolve voice per utterance
         if plan.speaker_mode == "multi":
-            asgn = plan.get_assignment(t_seg.segment_id)
-            if not asgn or not asgn.speaker_id:
-                plan.issues.append(DubbingIssue(
-                    segment_id=t_seg.segment_id,
-                    issue_type="unknown_speaker",
-                    message=f"ឃ្លា {t_seg.segment_id} មិនទាន់បានកំណត់អ្នកនិយាយឡើយ។",
-                    severity="blocking",
-                ))
-                continue
-            try:
-                choice = resolve_voice(
-                    assignment=asgn,
-                    voice_map=plan.speaker_voice_map,
-                    available_voice_ids=available_voice_ids,
-                    require_confirmed=require_confirmed_voices,
-                )
-                voice = choice.voice_id
-                speed = choice.rate
-                cache_key = speaker_tts_cache_key(text, choice, "edge-tts")
-            except VoiceSelectionRequired as ve:
-                plan.issues.append(DubbingIssue(
-                    segment_id=t_seg.segment_id,
-                    issue_type=str(ve),
-                    message=f"បញ្ហាសំឡេងលើឃ្លា {t_seg.segment_id} ({ve})",
-                    severity="blocking",
-                ))
-                continue
+            if audition_speaker_id and (not audition_segment_id or t_seg.segment_id == audition_segment_id):
+                choice = plan.speaker_voice_map.get(audition_speaker_id)
+                voice = choice.voice_id if choice else settings.voice
+                speed = choice.rate if choice else settings.speed
+                cache_key = compute_tts_cache_key(text, voice, speed)
+            else:
+                asgn = plan.get_assignment(t_seg.segment_id)
+                if not asgn or not asgn.speaker_id:
+                    plan.issues.append(DubbingIssue(
+                        segment_id=t_seg.segment_id,
+                        issue_type="unknown_speaker",
+                        message=f"ឃ្លា {t_seg.segment_id} មិនទាន់បានកំណត់អ្នកនិយាយឡើយ។",
+                        severity="blocking",
+                    ))
+                    if require_confirmed_voices:
+                        continue
+                    # For audition/preview, use the default speaker voice so preview is audible
+                    default_spk = plan.speakers[0].speaker_id if plan.speakers else "Speaker A"
+                    choice = plan.speaker_voice_map.get(default_spk)
+                    voice = choice.voice_id if choice else settings.voice
+                    speed = choice.rate if choice else settings.speed
+                    cache_key = compute_tts_cache_key(text, voice, speed)
+                else:
+                    try:
+                        choice = resolve_voice(
+                            assignment=asgn,
+                            voice_map=plan.speaker_voice_map,
+                            available_voice_ids=available_voice_ids,
+                            require_confirmed=require_confirmed_voices,
+                        )
+                        voice = choice.voice_id
+                        speed = choice.rate
+                        cache_key = speaker_tts_cache_key(text, choice, "edge-tts")
+                    except VoiceSelectionRequired as ve:
+                        plan.issues.append(DubbingIssue(
+                            segment_id=t_seg.segment_id,
+                            issue_type=str(ve),
+                            message=f"បញ្ហាសំឡេងលើឃ្លា {t_seg.segment_id} ({ve})",
+                            severity="blocking",
+                        ))
+                        if require_confirmed_voices:
+                            continue
+                        default_spk = plan.speakers[0].speaker_id if plan.speakers else "Speaker A"
+                        choice = plan.speaker_voice_map.get(default_spk)
+                        voice = choice.voice_id if choice else settings.voice
+                        speed = choice.rate if choice else settings.speed
+                        cache_key = compute_tts_cache_key(text, voice, speed)
         else:
             voice = settings.voice
             speed = settings.speed

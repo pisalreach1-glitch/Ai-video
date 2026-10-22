@@ -302,6 +302,10 @@ async def cb_dubbing_proceed(call: CallbackQuery, state: FSMContext | None = Non
         )
         save_dubbing_plan(job_id, revision_id, plan)
 
+        if not plan.clips:
+            await call.answer("⚠️ មិនមានឃ្លាណាមួយត្រូវបានបង្កើតសំឡេងឡើយ។", show_alert=True)
+            return
+
         # Check for blocking issues (overlong clips)
         too_long_clips = [c for c in plan.clips if c.status == "too_long"]
         if too_long_clips:

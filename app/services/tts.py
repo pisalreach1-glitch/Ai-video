@@ -21,60 +21,78 @@ async def generate_narration(
 ) -> tuple[Path, float, list[dict[str, Any]]]:
     """
     Generate narration MP3 and timing events in a single Edge-TTS pass.
+    Retries up to 3 times with backoff on transient errors.
     Returns: (output_path, actual_duration_seconds, timing_events)
     where timing_events is: [{'start': float, 'end': float, 'text': str}, ...]
     """
     dest = Path(output_audio_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    comm = edge_tts.Communicate(text=text.strip(), voice=voice, rate=rate)
-    timing_events: list[dict[str, Any]] = []
+    last_err: Exception | None = None
+    for attempt in range(3):
+        if cancel_check and cancel_check():
+            raise RuntimeError("TTS generation was cancelled.")
 
-    with open(dest, "wb") as audio_file:
-        async for chunk in comm.stream():
-            if cancel_check and cancel_check():
-                audio_file.close()
-                if dest.exists():
-                    dest.unlink(missing_ok=True)
-                raise RuntimeError("TTS generation was cancelled.")
+        comm = edge_tts.Communicate(text=text.strip(), voice=voice, rate=rate)
+        timing_events: list[dict[str, Any]] = []
 
-            chunk_type = chunk.get("type")
-            if chunk_type == "audio":
-                audio_file.write(chunk.get("data", b""))
-            elif chunk_type in ("SentenceBoundary", "WordBoundary"):
-                # Edge-TTS offset and duration are in 100-nanosecond units (10,000,000 units = 1s)
-                raw_offset = chunk.get("offset", 0)
-                raw_duration = chunk.get("duration", 0)
-                chunk_text = chunk.get("text", "").strip()
+        try:
+            with open(dest, "wb") as audio_file:
+                async for chunk in comm.stream():
+                    if cancel_check and cancel_check():
+                        audio_file.close()
+                        if dest.exists():
+                            dest.unlink(missing_ok=True)
+                        raise RuntimeError("TTS generation was cancelled.")
 
-                start_sec = raw_offset / 10_000_000.0
-                dur_sec = raw_duration / 10_000_000.0
-                end_sec = start_sec + dur_sec
+                    chunk_type = chunk.get("type")
+                    if chunk_type == "audio":
+                        audio_file.write(chunk.get("data", b""))
+                    elif chunk_type in ("SentenceBoundary", "WordBoundary"):
+                        raw_offset = chunk.get("offset", 0)
+                        raw_duration = chunk.get("duration", 0)
+                        chunk_text = chunk.get("text", "").strip()
 
-                if chunk_text:
-                    timing_events.append({
-                        "start": round(start_sec, 3),
-                        "end": round(end_sec, 3),
-                        "text": chunk_text,
-                    })
+                        start_sec = raw_offset / 10_000_000.0
+                        dur_sec = raw_duration / 10_000_000.0
+                        end_sec = start_sec + dur_sec
 
-    if not dest.exists() or dest.stat().st_size == 0:
-        raise RuntimeError("Generated audio file is empty or missing.")
+                        if chunk_text:
+                            timing_events.append({
+                                "start": round(start_sec, 3),
+                                "end": round(end_sec, 3),
+                                "text": chunk_text,
+                            })
 
-    # Measure exact audio duration from ffprobe or timing events
-    from app.services.media import probe_audio_duration
-    actual_duration = probe_audio_duration(dest)
-    if actual_duration <= 0.0 and timing_events:
-        actual_duration = max(ev["end"] for ev in timing_events)
+            if not dest.exists() or dest.stat().st_size == 0:
+                raise RuntimeError("Generated audio file is empty or missing.")
 
-    if not timing_events:
-        # If no boundary event was produced by Edge-TTS (rare service hiccup),
-        # raise TTSTimingError so calling code reports failure instead of fabricating timings
-        raise TTSTimingError("Edge-TTS did not return subtitle timing events for this text.")
+            # Measure exact audio duration from ffprobe or timing events
+            from app.services.media import probe_audio_duration
+            actual_duration = probe_audio_duration(dest)
+            if actual_duration <= 0.0 and timing_events:
+                actual_duration = max(ev["end"] for ev in timing_events)
 
-    # Ensure last event does not exceed actual duration
-    if timing_events and actual_duration > 0.0:
-        if timing_events[-1]["end"] > actual_duration + 0.5:
-            timing_events[-1]["end"] = actual_duration
+            if not timing_events:
+                raise TTSTimingError("Edge-TTS did not return subtitle timing events for this text.")
 
-    return dest, actual_duration, timing_events
+            # Ensure last event does not exceed actual duration
+            if timing_events and actual_duration > 0.0:
+                if timing_events[-1]["end"] > actual_duration + 0.5:
+                    timing_events[-1]["end"] = actual_duration
+
+            return dest, actual_duration, timing_events
+
+        except Exception as e:
+            last_err = e
+            if dest.exists():
+                dest.unlink(missing_ok=True)
+            if attempt < 2:
+                logger.warning(f"TTS attempt {attempt + 1} failed for voice {voice}: {e}. Retrying...")
+                await asyncio.sleep(1.0 * (attempt + 1))
+            else:
+                raise
+
+    if last_err:
+        raise last_err
+    raise RuntimeError("TTS generation failed without specific error.")
