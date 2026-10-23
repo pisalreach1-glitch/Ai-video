@@ -117,6 +117,7 @@ async def test_vc_approval_enqueues_final_talking_photo_task(tmp_path):
     assert row is not None
     assert row["task_type"] == "final"
     assert row["feature"] == JobFeature.TALKING_PHOTO.value
+    conn.execute("DELETE FROM render_queue WHERE job_id = ?", (job_id,))
 
 @pytest.mark.asyncio
 async def test_tp_pipeline_detects_converted_audio_tampering(tmp_path):

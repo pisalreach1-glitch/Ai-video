@@ -14,6 +14,18 @@ from app.handlers import register_all_handlers
 
 from pathlib import Path
 
+# Ensure stdout and stderr handle UTF-8 characters on Windows without charmap encoding errors
+if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr is not None and hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Setup logging handlers safely (supports console and pythonw background execution)
 _log_handlers = []
 if sys.stdout is not None:

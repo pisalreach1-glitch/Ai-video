@@ -71,16 +71,16 @@ class SadTalkerEngine:
 
         # Real SadTalker CLI invocation with bounded parameters in dedicated attempt dir
         import time
-        attempt_dir = output_dir / f"attempt_{int(time.time() * 1000)}"
+        attempt_dir = Path(output_dir).resolve() / f"attempt_{int(time.time() * 1000)}"
         attempt_dir.mkdir(parents=True, exist_ok=True)
         preprocess_mode = os.getenv("TALKING_PHOTO_PREPROCESS", "full")
 
         cmd = [
             self.python_exe,
             str(self.engine_dir / "inference.py"),
-            "--driven_audio", str(audio_path),
-            "--source_image", str(image_path),
-            "--result_dir", str(attempt_dir),
+            "--driven_audio", str(Path(audio_path).resolve()),
+            "--source_image", str(Path(image_path).resolve()),
+            "--result_dir", str(attempt_dir.resolve()),
             "--size", str(settings.face_size),
             "--batch_size", str(settings.batch_size),
             "--expression_scale", str(settings.expression_scale),

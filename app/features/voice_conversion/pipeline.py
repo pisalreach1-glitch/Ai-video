@@ -81,8 +81,23 @@ class VoiceConversionPipeline:
                 manifest_path=str(converted.manifest_path),
             )
 
-            # 2. Update TalkingPhotoRevision with converted master audio
+            # 2. Update or create TalkingPhotoRevision with converted master audio
             rev = talking_photo_storage.get_latest_revision(job_id)
+            if not rev:
+                tp_input_dir = workspace.get_tp_input_dir(job_id)
+                photo_candidates = list(tp_input_dir.glob("photo.*"))
+                if not photo_candidates:
+                    alt_dir = workspace.get_input_dir(job_id)
+                    photo_candidates = list(alt_dir.glob("photo.*")) + list(alt_dir.glob("*.jpg")) + list(alt_dir.glob("*.png"))
+                if photo_candidates:
+                    rev = talking_photo_storage.create_revision(
+                        job_id=job_id,
+                        image_path=str(photo_candidates[0]),
+                        original_voice_path=str(converted.master_wav),
+                        audio_source="converted_voice",
+                        approved_audio_artifact_id=conv.conversion_id,
+                    )
+
             if rev:
                 talking_photo_storage.update_revision_paths(
                     job_id=job_id,
@@ -92,6 +107,15 @@ class VoiceConversionPipeline:
                     audio_source="converted_voice",
                     approved_audio_artifact_id=conv.conversion_id,
                 )
+
+                if bot:
+                    try:
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text="🎬 **សំឡេងបម្លែងរួចរាល់!** AI កំពុងបង្កើតវីដេអូគំរូ Preview (៥ វិនាទី) ជាមួយចលនាមាត់... សូមរង់ចាំបន្តិច។",
+                        )
+                    except Exception:
+                        pass
 
                 # 3. Generate 5-second video preview automatically
                 preview_audio = out_dir / "preview_audio_5s.wav"
@@ -137,12 +161,20 @@ class VoiceConversionPipeline:
                     f"• សូមពិនិត្យចលនាមាត់ និងសំនៀងសំឡេងខាងលើ\n"
                     f"• ចុច «✅ អនុម័ត និង Render វីដេអូពេញ» ដើម្បីបង្កើតវីដេអូពេញលេញ។"
                 )
-                await bot.send_video(
-                    chat_id=chat_id,
-                    video=FSInputFile(str(preview_dest)),
-                    caption=caption,
-                    reply_markup=vc_preview_keyboard(job_id, conv.conversion_id),
-                )
+                if bot:
+                    await bot.send_video(
+                        chat_id=chat_id,
+                        video=FSInputFile(str(preview_dest)),
+                        caption=caption,
+                        reply_markup=vc_preview_keyboard(job_id, conv.conversion_id),
+                    )
+            else:
+                logger.error(f"Cannot find portrait image to create TalkingPhotoRevision for job {job_id}")
+                if bot:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text="❌ មិនអាចរកឃើញរូបថតសម្រាប់បង្កើត Talking Photo ឡើយ។ សូមចាប់ផ្តើមឡើងវិញ។",
+                    )
 
             job_storage.set_job_status(job_id, JobState.AWAITING_APPROVAL, stage="preview_ready")
             job_storage.complete_task(job_id, "completed")
