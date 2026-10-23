@@ -1,18 +1,14 @@
 """Background worker queue for preview and final video rendering."""
 import asyncio
 import logging
-from pathlib import Path
 from typing import Any
 from aiogram import Bot
-from aiogram.types import FSInputFile
 from app.config import config
 from app.domain.states import JobState
-from app.domain.models import Job, Revision
+from app.domain.features import QueueTask, JobFeature
+from app.features.registry import feature_registry
 from app.jobs.processes import kill_process_tree
 from app.storage.jobs import job_storage
-from app.storage.workspaces import workspace
-from app.ui import texts_km as texts
-from app.ui.keyboards import video_preview_review_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +24,15 @@ class WorkerPool:
 
     def set_bot(self, bot: Bot) -> None:
         self.bot = bot
+
+    def get_bot(self) -> Bot | None:
+        return self.bot
+
+    def register_pid(self, job_id: str, pid: int) -> None:
+        self._active_pids[job_id] = pid
+
+    def pop_pid(self, job_id: str) -> int | None:
+        return self._active_pids.pop(job_id, None)
 
     def start(self) -> None:
         if self._running:
@@ -72,7 +77,7 @@ class WorkerPool:
         logger.info(f"Worker {worker_id} started loop.")
         while self._running:
             try:
-                task_data = job_storage.claim_next_task()
+                task_data = self.storage.claim_next_task()
                 if not task_data:
                     await asyncio.sleep(0.5)
                     continue
@@ -80,13 +85,21 @@ class WorkerPool:
                 job_id = task_data["job_id"]
                 revision_id = task_data["revision_id"]
                 task_type = task_data["task_type"]
+                feature = task_data.get("feature") or JobFeature.VIDEO_VOICEOVER.value
+                input_digest = task_data.get("input_digest")
 
                 # Check if already cancelled
                 if self.is_cancelled(job_id):
-                    job_storage.complete_task(job_id, "cancelled")
+                    self.storage.complete_task(job_id, "cancelled")
                     continue
 
-                await self._process_task(job_id, revision_id, task_type)
+                await self._process_task(
+                    job_id=job_id,
+                    revision_id=revision_id,
+                    task_type=task_type,
+                    feature=feature,
+                    input_digest=input_digest,
+                )
 
             except asyncio.CancelledError:
                 break
@@ -94,159 +107,42 @@ class WorkerPool:
                 logger.exception(f"Unhandled error in worker {worker_id}: {e}")
                 await asyncio.sleep(1.0)
 
-    async def _process_task(self, job_id: str, revision_id: int, task_type: str) -> None:
-        from app.services.previews import render_preview_video
-        from app.services.render import render_video, RenderCancelledError
-        from app.services.delivery import deliver_final_video
-
-        job = job_storage.get_job(job_id)
-        revision = job_storage.get_revision(job_id, revision_id)
-
-        if not job or not revision:
-            logger.error(f"Cannot process task {task_type} for missing job {job_id} / rev {revision_id}")
-            job_storage.complete_task(job_id, "failed")
+    async def _process_task(
+        self,
+        job_id: str,
+        revision_id: int,
+        task_type: str,
+        feature: str = JobFeature.VIDEO_VOICEOVER.value,
+        input_digest: str | None = None,
+    ) -> None:
+        job = self.storage.get_job(job_id)
+        if not job:
+            logger.error(f"Cannot process task {task_type} for missing job {job_id}")
+            self.storage.complete_task(job_id, "failed")
             return
 
-        chat_id = job.chat_id
-        source_path = job.source_path
-        voice_path = revision.audio_path
-        ass_path = revision.subtitles_ass
-        settings = revision.settings
-        duration = revision.audio_duration
-
-        if not source_path or not voice_path:
-            logger.error(f"Missing media paths for job {job_id}")
-            job_storage.set_job_status(job_id, JobState.FAILED, error_message="Missing source or audio files.")
-            job_storage.complete_task(job_id, "failed")
+        if self.is_cancelled(job_id):
+            self.storage.complete_task(job_id, "cancelled")
             return
 
-        def on_pid(pid: int) -> None:
-            self._active_pids[job_id] = pid
-
-        mode = revision.mode or (job.mode if job else "free_narration")
-        cancel_check = lambda: self.is_cancelled(job_id)
+        job_feature = getattr(job, "feature", None) or feature or JobFeature.VIDEO_VOICEOVER.value
+        task = QueueTask(
+            job_id=job_id,
+            revision_id=revision_id,
+            feature=job_feature,
+            task_type=task_type,
+            user_id=job.user_id,
+            input_digest=input_digest,
+        )
 
         try:
-            if task_type == "preview":
-                job_storage.set_job_status(job_id, JobState.PREVIEW_RENDERING)
-                preview_dest = workspace.get_preview_video_path(job_id, revision_id)
-
-                preview_start_time = 0.0
-                if mode == "source_timed":
-                    from app.storage.dubbing import load_dubbing_plan
-                    plan = load_dubbing_plan(job_id, revision_id)
-                    if plan and plan.placements:
-                        first_ms = plan.placements[0].timeline_start_ms
-                        preview_start_time = max(0.0, (first_ms / 1000.0) - 0.5)
-
-                await render_preview_video(
-                    source_path=source_path,
-                    voice_audio_path=voice_path,
-                    output_preview_path=preview_dest,
-                    settings=settings,
-                    target_duration=duration,
-                    subtitles_ass_path=ass_path,
-                    preview_duration=5.0,
-                    timeout_seconds=float(config.subprocess_timeout_seconds),
-                    cancel_check=cancel_check,
-                    on_pid=on_pid,
-                    mode=mode,
-                    start_time=preview_start_time,
-                )
-
-                if cancel_check():
-                    job_storage.complete_task(job_id, "cancelled")
-                    return
-
-                job_storage.update_revision(job_id, revision_id, preview_path=str(preview_dest))
-                job_storage.set_job_status(job_id, JobState.AWAITING_APPROVAL)
-                job_storage.complete_task(job_id, "completed")
-
-                if self.bot and preview_dest.exists():
-                    video_input = FSInputFile(str(preview_dest), filename="preview.mp4")
-                    await self.bot.send_video(
-                        chat_id=chat_id,
-                        video=video_input,
-                        caption=texts.PREVIEW_REVIEW_PROMPT,
-                        reply_markup=video_preview_review_keyboard(job_id, revision_id),
-                        supports_streaming=True,
-                    )
-
-            elif task_type == "final":
-                if mode == "source_timed":
-                    from app.storage.dubbing import load_dubbing_plan
-                    from app.services.content_coverage import validate_content_coverage
-                    plan = load_dubbing_plan(job_id, revision_id)
-                    if not plan or plan.has_blocking_issues:
-                        logger.error(f"Cannot render final for job {job_id}: plan has unresolved blocking issues.")
-                        job_storage.set_job_status(job_id, JobState.FAILED, error_message="Unresolved blocking issues exist.")
-                        job_storage.complete_task(job_id, "failed")
-                        return
-
-                    coverage_issues = validate_content_coverage(plan, settings, require_clips_and_placements=True)
-                    if coverage_issues:
-                        logger.error(f"Cannot render final for job {job_id}: coverage validation failed: {coverage_issues[0].message}")
-                        job_storage.set_job_status(job_id, JobState.FAILED, error_message=coverage_issues[0].message)
-                        job_storage.complete_task(job_id, "failed")
-                        return
-
-                    if plan.speaker_mode == "multi" and plan.full_preview_approved_digest:
-                        from app.services.speaker_review import compute_plan_content_digest
-                        current_digest = compute_plan_content_digest(plan, settings)
-                        if plan.full_preview_approved_digest != current_digest:
-                            logger.error(f"Cannot render final for job {job_id}: approved digest mismatch (plan modified after approval).")
-                            job_storage.set_job_status(job_id, JobState.FAILED, error_message="Plan was modified after preview approval.")
-                            job_storage.complete_task(job_id, "failed")
-                            return
-
-                job_storage.set_job_status(job_id, JobState.RENDERING)
-                final_dest = workspace.get_final_video_path(job_id, revision_id)
-
-                await render_video(
-                    source_path=source_path,
-                    voice_audio_path=voice_path,
-                    output_path=final_dest,
-                    settings=settings,
-                    target_duration=duration,
-                    subtitles_ass_path=ass_path,
-                    is_preview=False,
-                    timeout_seconds=float(config.subprocess_timeout_seconds),
-                    cancel_check=cancel_check,
-                    on_pid=on_pid,
-                    mode=mode,
-                )
-
-                if cancel_check():
-                    job_storage.complete_task(job_id, "cancelled")
-                    return
-
-                job_storage.update_revision(job_id, revision_id, final_path=str(final_dest))
-                job_storage.complete_task(job_id, "completed")
-
-                # Re-fetch updated revision for delivery
-                rev_updated = job_storage.get_revision(job_id, revision_id)
-                if self.bot and rev_updated:
-                    await deliver_final_video(self.bot, chat_id, job_id, rev_updated)
-
-        except RenderCancelledError:
-            logger.info(f"Job {job_id} was successfully cancelled.")
-            job_storage.set_job_status(job_id, JobState.CANCELLED)
-            job_storage.complete_task(job_id, "cancelled")
-            if self.bot:
-                try:
-                    await self.bot.send_message(chat_id, texts.JOB_CANCELLED)
-                except Exception:
-                    pass
-
+            pipeline = feature_registry.get(job_feature)
+            pipeline.validate_task_type(task_type)
+            await pipeline.run(task, self)
         except Exception as e:
-            logger.exception(f"Error rendering job {job_id}: {e}")
-            job_storage.set_job_status(job_id, JobState.FAILED, error_message=str(e))
-            job_storage.complete_task(job_id, "failed")
-            if self.bot and not cancel_check():
-                try:
-                    await self.bot.send_message(chat_id, texts.JOB_FAILED.format(error=str(e)))
-                except Exception:
-                    pass
+            logger.exception(f"Error executing pipeline {job_feature} for job {job_id}: {e}")
+            self.storage.set_job_status(job_id, JobState.FAILED, error_message=str(e)[:300])
+            self.storage.complete_task(job_id, "failed")
         finally:
             self._active_pids.pop(job_id, None)
 

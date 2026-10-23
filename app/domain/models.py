@@ -4,6 +4,7 @@ import hashlib
 from dataclasses import dataclass, field, asdict
 from typing import Any
 from app.domain.states import JobState
+from app.domain.features import JobFeature
 
 @dataclass
 class MediaInfo:
@@ -162,6 +163,7 @@ class Job:
     status: JobState = JobState.AWAITING_SOURCE
     stage: str = "init"
     current_revision_id: int = 1
+    feature: str = JobFeature.VIDEO_VOICEOVER.value  # "video_voiceover" | "talking_photo"
     mode: str = "free_narration"        # "free_narration" | "source_timed"
     dubbing_revision_id: int | None = None
     duration_policy: str = "extend"
@@ -181,6 +183,7 @@ class Job:
             "status": self.status.value if isinstance(self.status, JobState) else str(self.status),
             "stage": self.stage,
             "current_revision_id": self.current_revision_id,
+            "feature": self.feature,
             "mode": self.mode,
             "dubbing_revision_id": self.dubbing_revision_id,
             "duration_policy": self.duration_policy,
@@ -217,6 +220,7 @@ class Job:
             status=status_enum,
             stage=str(data.get("stage", "init")),
             current_revision_id=int(data.get("current_revision_id", 1)),
+            feature=str(data.get("feature", JobFeature.VIDEO_VOICEOVER.value)),
             mode=str(data.get("mode", "free_narration")),
             dubbing_revision_id=int(data["dubbing_revision_id"]) if data.get("dubbing_revision_id") is not None else None,
             duration_policy=str(data.get("duration_policy", "extend")),

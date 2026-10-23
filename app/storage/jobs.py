@@ -5,6 +5,7 @@ import uuid
 from typing import Any
 from app.domain.models import Job, Revision, VoiceSettings, MediaInfo
 from app.domain.states import JobState
+from app.domain.features import JobFeature
 from app.storage.database import get_db
 
 class JobStorage:
@@ -17,6 +18,7 @@ class JobStorage:
         chat_id: int,
         source_type: str = "upload",
         source_url: str | None = None,
+        feature: str = JobFeature.VIDEO_VOICEOVER.value,
     ) -> Job:
         job_id = str(uuid.uuid4())
         now = time.time()
@@ -29,6 +31,7 @@ class JobStorage:
             status=JobState.AWAITING_SOURCE,
             stage="init",
             current_revision_id=1,
+            feature=feature,
             created_at=now,
             updated_at=now,
         )
@@ -38,9 +41,9 @@ class JobStorage:
             """
             INSERT INTO jobs (
                 job_id, user_id, chat_id, source_type, source_path, source_url,
-                source_media_info, status, stage, current_revision_id, mode, dubbing_revision_id,
+                source_media_info, status, stage, current_revision_id, feature, mode, dubbing_revision_id,
                 duration_policy, error_message, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job.job_id,
@@ -53,6 +56,7 @@ class JobStorage:
                 job.status.value,
                 job.stage,
                 job.current_revision_id,
+                job.feature,
                 job.mode,
                 job.dubbing_revision_id,
                 job.duration_policy,
@@ -68,6 +72,7 @@ class JobStorage:
         user_id: int,
         chat_id: int,
         candidate_job_id: str | None = None,
+        feature: str = JobFeature.VIDEO_VOICEOVER.value,
     ) -> Job:
         """
         Atomically claim an existing AWAITING_SOURCE job or create a new job in DOWNLOADING state.
@@ -99,6 +104,7 @@ class JobStorage:
             source_type="upload",
             status=JobState.DOWNLOADING,
             stage="downloading",
+            feature=feature,
             created_at=now,
             updated_at=now,
         )
@@ -106,9 +112,9 @@ class JobStorage:
             """
             INSERT INTO jobs (
                 job_id, user_id, chat_id, source_type, source_path, source_url,
-                source_media_info, status, stage, current_revision_id, mode, dubbing_revision_id,
+                source_media_info, status, stage, current_revision_id, feature, mode, dubbing_revision_id,
                 duration_policy, error_message, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job.job_id,
@@ -121,6 +127,7 @@ class JobStorage:
                 job.status.value,
                 job.stage,
                 job.current_revision_id,
+                job.feature,
                 job.mode,
                 job.dubbing_revision_id,
                 job.duration_policy,
@@ -318,6 +325,8 @@ class JobStorage:
         revision_id: int,
         user_id: int,
         task_type: str, # "preview" | "final"
+        feature: str = JobFeature.VIDEO_VOICEOVER.value,
+        input_digest: str | None = None,
     ) -> bool:
         conn = self.db.get_connection()
         now = time.time()
@@ -325,15 +334,17 @@ class JobStorage:
             conn.execute(
                 """
                 INSERT INTO render_queue (
-                    job_id, revision_id, user_id, task_type, status, enqueued_at, retry_count
-                ) VALUES (?, ?, ?, ?, 'queued', ?, 0)
+                    job_id, revision_id, user_id, task_type, status, feature, input_digest, enqueued_at, retry_count
+                ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, 0)
                 ON CONFLICT(job_id) DO UPDATE SET
                     revision_id = excluded.revision_id,
                     task_type = excluded.task_type,
                     status = 'queued',
+                    feature = excluded.feature,
+                    input_digest = excluded.input_digest,
                     enqueued_at = excluded.enqueued_at
                 """,
-                (job_id, revision_id, user_id, task_type, now)
+                (job_id, revision_id, user_id, task_type, feature, input_digest, now)
             )
             return True
         except Exception:
@@ -344,7 +355,7 @@ class JobStorage:
         with self.db.transaction() as conn:
             row = conn.execute(
                 """
-                SELECT job_id, revision_id, user_id, task_type, enqueued_at
+                SELECT job_id, revision_id, user_id, task_type, feature, input_digest, enqueued_at
                 FROM render_queue
                 WHERE status = 'queued'
                 ORDER BY enqueued_at ASC
@@ -468,7 +479,12 @@ class JobStorage:
         return count
 
     # ---------------- History & Active Jobs ----------------
-    def get_user_active_job(self, user_id: int, chat_id: int) -> Job | None:
+    def get_user_active_jobs(
+        self,
+        user_id: int,
+        chat_id: int,
+        feature: str | None = None
+    ) -> list[Job]:
         conn = self.db.get_connection()
         active_statuses = (
             JobState.AWAITING_SOURCE.value,
@@ -490,18 +506,30 @@ class JobStorage:
             JobState.INTERRUPTED.value,
         )
         placeholders = ",".join("?" for _ in active_statuses)
-        row = conn.execute(
-            f"""
+        if feature:
+            query = f"""
+            SELECT * FROM jobs
+            WHERE user_id = ? AND chat_id = ? AND feature = ? AND status IN ({placeholders})
+            ORDER BY updated_at DESC
+            """
+            rows = conn.execute(query, (user_id, chat_id, feature, *active_statuses)).fetchall()
+        else:
+            query = f"""
             SELECT * FROM jobs
             WHERE user_id = ? AND chat_id = ? AND status IN ({placeholders})
             ORDER BY updated_at DESC
-            LIMIT 1
-            """,
-            (user_id, chat_id, *active_statuses)
-        ).fetchone()
-        if not row:
-            return None
-        return Job.from_dict(dict(row))
+            """
+            rows = conn.execute(query, (user_id, chat_id, *active_statuses)).fetchall()
+        return [Job.from_dict(dict(r)) for r in rows]
+
+    def get_user_active_job(
+        self,
+        user_id: int,
+        chat_id: int,
+        feature: str | None = None
+    ) -> Job | None:
+        jobs = self.get_user_active_jobs(user_id, chat_id, feature=feature)
+        return jobs[0] if jobs else None
 
     def list_user_jobs(
         self,

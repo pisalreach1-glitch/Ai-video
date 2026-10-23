@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     status TEXT NOT NULL,
     stage TEXT DEFAULT 'init',
     current_revision_id INTEGER NOT NULL DEFAULT 1,
+    feature TEXT NOT NULL DEFAULT 'video_voiceover',
     mode TEXT NOT NULL DEFAULT 'free_narration',
     dubbing_revision_id INTEGER,
     duration_policy TEXT NOT NULL DEFAULT 'extend',
@@ -72,12 +73,34 @@ CREATE TABLE IF NOT EXISTS revisions (
     FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS talking_photo_revisions (
+    job_id TEXT NOT NULL,
+    revision_id INTEGER NOT NULL,
+    input_version INTEGER NOT NULL DEFAULT 1,
+    image_path TEXT NOT NULL,
+    original_voice_path TEXT NOT NULL,
+    inference_wav_path TEXT,
+    master_audio_path TEXT,
+    settings_json TEXT NOT NULL,
+    manifest_path TEXT,
+    preview_path TEXT,
+    approved_preview_id TEXT,
+    final_path TEXT,
+    input_digest TEXT NOT NULL,
+    engine_version TEXT,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (job_id, revision_id),
+    FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS render_queue (
     job_id TEXT PRIMARY KEY,
     revision_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
     task_type TEXT NOT NULL, -- 'preview' | 'final'
     status TEXT NOT NULL,    -- 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled'
+    feature TEXT NOT NULL DEFAULT 'video_voiceover',
+    input_digest TEXT,
     enqueued_at REAL NOT NULL,
     started_at REAL,
     completed_at REAL,
@@ -86,6 +109,7 @@ CREATE TABLE IF NOT EXISTS render_queue (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_user_chat ON jobs(user_id, chat_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_revisions_job_id ON revisions(job_id, revision_id);
+CREATE INDEX IF NOT EXISTS idx_talking_photo_revisions_job_id ON talking_photo_revisions(job_id, revision_id);
 CREATE INDEX IF NOT EXISTS idx_render_queue_status ON render_queue(status, enqueued_at ASC);
 """
 
@@ -122,6 +146,8 @@ class Database:
     def _run_migrations(self, conn: sqlite3.Connection) -> None:
         # Additive migration for jobs table
         job_cols = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+        if "feature" not in job_cols:
+            conn.execute("ALTER TABLE jobs ADD COLUMN feature TEXT NOT NULL DEFAULT 'video_voiceover'")
         if "mode" not in job_cols:
             conn.execute("ALTER TABLE jobs ADD COLUMN mode TEXT NOT NULL DEFAULT 'free_narration'")
         if "dubbing_revision_id" not in job_cols:
@@ -133,6 +159,13 @@ class Database:
             conn.execute("ALTER TABLE revisions ADD COLUMN mode TEXT NOT NULL DEFAULT 'free_narration'")
         if "dubbing_plan_path" not in rev_cols:
             conn.execute("ALTER TABLE revisions ADD COLUMN dubbing_plan_path TEXT")
+
+        # Additive migration for render_queue table
+        q_cols = {row["name"] for row in conn.execute("PRAGMA table_info(render_queue)").fetchall()}
+        if "feature" not in q_cols:
+            conn.execute("ALTER TABLE render_queue ADD COLUMN feature TEXT NOT NULL DEFAULT 'video_voiceover'")
+        if "input_digest" not in q_cols:
+            conn.execute("ALTER TABLE render_queue ADD COLUMN input_digest TEXT")
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:

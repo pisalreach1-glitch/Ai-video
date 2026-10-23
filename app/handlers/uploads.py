@@ -41,6 +41,11 @@ async def cb_source_upload(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(F.video | F.document)
 async def handle_video_upload(message: Message, state: FSMContext, bot: Bot) -> None:
+    if hasattr(state, "get_state"):
+        current_state = await state.get_state()
+        if current_state and "TalkingPhotoSteps" in str(current_state):
+            return
+
     user_id = message.from_user.id
     chat_id = message.chat.id
 

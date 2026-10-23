@@ -119,4 +119,48 @@ class WorkspaceManager:
         safe_name = "".join(c for c in voice_name if c.isalnum() or c in "-_")
         return self.voice_samples_dir / f"{safe_name}.mp3"
 
+    # ---------------- Talking Photo Workspaces ----------------
+    def get_tp_dir(self, job_id: str) -> Path:
+        d = self.get_job_dir(job_id) / "talking_photo"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def get_tp_input_dir(self, job_id: str) -> Path:
+        d = self.get_tp_dir(job_id) / "input"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def get_tp_photo_path(self, job_id: str, ext: str = "png") -> Path:
+        return self.get_tp_input_dir(job_id) / f"photo.{ext.lstrip('.')}"
+
+    def get_tp_voice_path(self, job_id: str, ext: str = "ogg") -> Path:
+        return self.get_tp_input_dir(job_id) / f"original_voice.{ext.lstrip('.')}"
+
+    def get_tp_revision_dir(self, job_id: str, revision_id: int, snapshot_id: str | None = None) -> Path:
+        base = self.get_tp_dir(job_id) / "revisions" / str(revision_id)
+        if snapshot_id:
+            d = base / snapshot_id
+        else:
+            d = base
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def get_tp_inference_wav_path(self, job_id: str, revision_id: int, snapshot_id: str | None = None) -> Path:
+        return self.get_tp_revision_dir(job_id, revision_id, snapshot_id) / "inference.wav"
+
+    def get_tp_master_audio_path(self, job_id: str, revision_id: int, snapshot_id: str | None = None) -> Path:
+        return self.get_tp_revision_dir(job_id, revision_id, snapshot_id) / "master_audio.wav"
+
+    def get_tp_preview_path(self, job_id: str, revision_id: int, snapshot_id: str | None = None) -> Path:
+        return self.get_tp_revision_dir(job_id, revision_id, snapshot_id) / "preview.mp4"
+
+    def get_tp_final_path(self, job_id: str, revision_id: int, snapshot_id: str | None = None) -> Path:
+        return self.get_tp_revision_dir(job_id, revision_id, snapshot_id) / "final.mp4"
+
+    def get_tp_manifest_path(self, job_id: str, revision_id: int, snapshot_id: str | None = None) -> Path:
+        return self.get_tp_revision_dir(job_id, revision_id, snapshot_id) / "manifest.json"
+
+    def get_tp_engine_log_path(self, job_id: str, revision_id: int, snapshot_id: str | None = None) -> Path:
+        return self.get_tp_revision_dir(job_id, revision_id, snapshot_id) / "engine.log"
+
 workspace = WorkspaceManager()

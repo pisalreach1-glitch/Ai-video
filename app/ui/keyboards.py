@@ -1,18 +1,41 @@
-"""Inline keyboard builders for all bot interaction stages."""
+from typing import Any
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.ui import options as opt
 
 def main_menu_keyboard(has_active_job: bool = False) -> InlineKeyboardMarkup:
-    buttons = []
+    rows = [
+        [InlineKeyboardButton(
+            text="🎬 បញ្ចូលសំឡេងទៅវីដេអូ",
+            callback_data="nav_new_video",
+        )],
+        [InlineKeyboardButton(
+            text="🖼️ រូបថតនិយាយតាម Voice",
+            callback_data="nav_talking_photo",
+        )],
+    ]
     if has_active_job:
-        buttons.append([InlineKeyboardButton(text="▶️ បន្តការងារចាស់", callback_data="nav_resume")])
-    buttons.append([InlineKeyboardButton(text="🎬 បង្កើតវីដេអូ", callback_data="nav_new_video")])
-    buttons.append([
-        InlineKeyboardButton(text="📂 វីដេអូរបស់ខ្ញុំ", callback_data="nav_my_videos:1"),
-        InlineKeyboardButton(text="⚙️ ការកំណត់របស់ខ្ញុំ", callback_data="nav_my_settings"),
+        rows.append([InlineKeyboardButton(
+            text="▶️ បន្តការងារ", callback_data="nav_resume"
+        )])
+    rows.extend([
+        [
+            InlineKeyboardButton(text="📂 វីដេអូរបស់ខ្ញុំ", callback_data="nav_my_videos:1"),
+            InlineKeyboardButton(text="⚙️ ការកំណត់", callback_data="nav_my_settings"),
+        ],
+        [InlineKeyboardButton(text="❓ របៀបប្រើ", callback_data="nav_help")],
     ])
-    buttons.append([InlineKeyboardButton(text="❓ របៀបប្រើ", callback_data="nav_help")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def active_job_picker_keyboard(active_jobs: list[Any]) -> InlineKeyboardMarkup:
+    rows = []
+    for job in active_jobs:
+        feature_label = "🎬 វីដេអូ" if getattr(job, "feature", "video_voiceover") == "video_voiceover" else "🖼️ រូបថត"
+        short_id = job.job_id[:8]
+        status_text = job.status.value if hasattr(job.status, "value") else str(job.status)
+        btn_text = f"{feature_label} ({short_id} - {status_text})"
+        rows.append([InlineKeyboardButton(text=btn_text, callback_data=f"resume_job:{job.job_id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ ត្រឡប់ក្រោយ", callback_data="nav_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def source_choice_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
