@@ -16,7 +16,7 @@ from app.features.voice_clone.keyboards import (
     vc_text_prompt_keyboard,
     vc_review_keyboard,
 )
-from app.features.voice_clone.backends.local import local_clone_backend
+from app.features.voice_clone.backends import get_voice_clone_backend
 from app.features.talking_photo.states import TalkingPhotoSteps
 from app.features.talking_photo.storage import talking_photo_storage
 from app.storage.jobs import job_storage
@@ -51,7 +51,8 @@ async def cb_choose_clone_voice(callback: CallbackQuery, state: FSMContext) -> N
     job_id = parts[1]
 
     # Verify backend configuration
-    caps = await local_clone_backend.capabilities()
+    backend = get_voice_clone_backend()
+    caps = await backend.capabilities()
     if not caps.supports_khmer:
         msg = (
             "⚠️ **មុខងារ Clone សំឡេងខ្លួនឯង (Local Voice Clone) មិនទាន់ដំណើរការទេ៖**\n\n"

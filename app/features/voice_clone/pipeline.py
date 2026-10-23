@@ -10,7 +10,7 @@ from app.storage.workspaces import workspace
 from app.jobs.gpu_scheduler import gpu_scheduler
 from app.features.voice_clone.storage import voice_clone_storage
 from app.features.voice_clone.domain import CloneRequest
-from app.features.voice_clone.backends.local import local_clone_backend
+from app.features.voice_clone.backends import get_voice_clone_backend
 from app.features.voice_clone.assembly import create_telegram_playback_audio
 from app.features.voice_clone.keyboards import vc_review_keyboard
 
@@ -67,8 +67,9 @@ class VoiceClonePipeline:
 
         try:
             # Shared GPU lease during model inference
+            backend = get_voice_clone_backend()
             async with gpu_scheduler.acquire(tag="voice_clone", job_id=job_id):
-                out = await local_clone_backend.synthesize(
+                out = await backend.synthesize(
                     req,
                     cancel_check=cancel_check,
                     on_pid=on_pid,

@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Callable
 
 from app.features.voice_clone.domain import CloneCapabilities, CloneRequest, CloneOutput
-from app.features.voice_clone.text_chunks import split_into_chunks, verify_chunk_coverage
-from app.features.voice_clone.assembly import assemble_speech_chunks
+from app.features.voice_clone.text_chunks import split_text_into_chunks, verify_chunk_coverage
+from app.features.voice_clone.assembly import assemble_audio_chunks
 from app.jobs.processes import run_process
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,8 @@ class OmniVoiceBackend:
     def __init__(self):
         self.backend_id = "omnivoice"
         self.model_version = os.getenv("OMNIVOICE_MODEL_REVISION", "1.0.0")
-        self.python_exe = os.getenv("OMNIVOICE_PYTHON", sys.executable)
+        py_env = os.getenv("OMNIVOICE_PYTHON")
+        self.python_exe = py_env if (py_env and Path(py_env).is_file()) else sys.executable
         self.runner_script = Path(__file__).resolve().parent.parent.parent.parent.parent / "engines" / "omnivoice_bridge" / "runner.py"
 
     async def capabilities(self) -> CloneCapabilities:
@@ -46,7 +47,7 @@ class OmniVoiceBackend:
         chunks_dir.mkdir(parents=True, exist_ok=True)
 
         # 1. Chunking text with stable IDs
-        chunks = split_into_chunks(request.text, max_chunk_chars=250)
+        chunks = split_text_into_chunks(request.text, max_chunk_chars=250)
         verify_chunk_coverage(request.text, chunks)
 
         chunk_wav_paths = []
@@ -89,13 +90,23 @@ class OmniVoiceBackend:
         master_wav_path = output_dir / "master_audio.wav"
         manifest_path = output_dir / "manifest.json"
 
-        assembled_path, dur, sha256 = await assemble_speech_chunks(
+        assembled_path, dur, sha256 = await assemble_audio_chunks(
             chunk_wav_paths,
             master_wav_path,
-            manifest_path,
-            pause_seconds=0.25,
+            pause_ms=250,
             sample_rate=24000,
+            on_pid=on_pid,
+            cancel_check=cancel_check,
         )
+
+        manifest_data = {
+            "artifact_id": request.artifact_id,
+            "duration_seconds": dur,
+            "sha256": sha256,
+            "chunks_count": len(chunks),
+        }
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest_data, f, indent=2)
 
         return CloneOutput(
             artifact_id=request.artifact_id,
