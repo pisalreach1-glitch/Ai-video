@@ -31,6 +31,12 @@ class TalkingPhotoStorage:
         input_digest: str | None = None,
         input_version: int = 1,
         engine_version: str = "sadtalker-1.0",
+        audio_source: str = "recorded_voice",
+        approved_audio_artifact_id: str | None = None,
+        audio_approval_id: str | None = None,
+        image_sha256: str = "",
+        settings_digest: str = "",
+        video_snapshot_digest: str = "",
     ) -> TalkingPhotoRevision:
         conn = self.db.get_connection()
         now = time.time()
@@ -54,8 +60,9 @@ class TalkingPhotoStorage:
                 job_id, revision_id, input_version, image_path, original_voice_path,
                 inference_wav_path, master_audio_path, settings_json, manifest_path,
                 preview_path, approved_preview_id, final_path, input_digest,
-                engine_version, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                engine_version, audio_source, approved_audio_artifact_id, audio_approval_id,
+                image_sha256, settings_digest, video_snapshot_digest, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id,
@@ -72,6 +79,12 @@ class TalkingPhotoStorage:
                 None,
                 input_digest,
                 engine_version,
+                audio_source,
+                approved_audio_artifact_id,
+                audio_approval_id,
+                image_sha256,
+                settings_digest,
+                video_snapshot_digest,
                 now,
             )
         )
@@ -91,6 +104,12 @@ class TalkingPhotoStorage:
             settings=st,
             input_digest=input_digest,
             engine_version=engine_version,
+            audio_source=audio_source,
+            approved_audio_artifact_id=approved_audio_artifact_id,
+            audio_approval_id=audio_approval_id,
+            image_sha256=image_sha256,
+            settings_digest=settings_digest,
+            video_snapshot_digest=video_snapshot_digest,
             created_at=now,
         )
 
@@ -129,6 +148,9 @@ class TalkingPhotoStorage:
         approved_preview_id: str | None = None,
         final_path: str | None = None,
         manifest_path: str | None = None,
+        audio_source: str | None = None,
+        approved_audio_artifact_id: str | None = None,
+        audio_approval_id: str | None = None,
     ) -> None:
         conn = self.db.get_connection()
         updates = []
@@ -151,6 +173,15 @@ class TalkingPhotoStorage:
         if manifest_path is not None:
             updates.append("manifest_path = ?")
             params.append(str(manifest_path))
+        if audio_source is not None:
+            updates.append("audio_source = ?")
+            params.append(str(audio_source))
+        if approved_audio_artifact_id is not None:
+            updates.append("approved_audio_artifact_id = ?")
+            params.append(str(approved_audio_artifact_id))
+        if audio_approval_id is not None:
+            updates.append("audio_approval_id = ?")
+            params.append(str(audio_approval_id))
 
         if not updates:
             return

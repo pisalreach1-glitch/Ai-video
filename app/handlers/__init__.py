@@ -15,12 +15,14 @@ from app.handlers import (
     history,
 )
 from app.features.talking_photo.handlers import router as talking_photo_router
+from app.features.voice_clone.handlers import router as voice_clone_router
 
 def register_all_handlers(dp: Dispatcher) -> None:
     """Register all routers into the aiogram Dispatcher in priority order."""
     dp.include_router(start.router)
     dp.include_router(navigation.router)
     dp.include_router(talking_photo_router)
+    dp.include_router(voice_clone_router)
     dp.include_router(uploads.router)
     dp.include_router(links.router)
     dp.include_router(modes.router)

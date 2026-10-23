@@ -24,12 +24,14 @@ async def mux_master_audio(
     output_mp4.parent.mkdir(parents=True, exist_ok=True)
     audio_dur = await measure_audio_duration(master_audio)
 
-    # Base cmd
+    # Base cmd with explicit stream mapping
     cmd = [
         config.ffmpeg_path,
         "-y",
         "-i", str(video_track),
         "-i", str(master_audio),
+        "-map", "0:v:0",
+        "-map", "1:a:0",
     ]
 
     if preview_limit and preview_limit > 0:

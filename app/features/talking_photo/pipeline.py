@@ -18,10 +18,14 @@ logger = logging.getLogger(__name__)
 
 class TalkingPhotoPipeline:
     def validate_task_type(self, task_type: str) -> None:
-        if task_type not in ("preview", "final"):
+        if task_type not in ("preview", "final", "clone_synthesis"):
             raise ValueError(f"Unsupported task_type '{task_type}' for talking_photo pipeline.")
 
     async def run(self, task: QueueTask, worker_pool: Any) -> None:
+        if task.task_type == "clone_synthesis":
+            from app.features.voice_clone.pipeline import voice_clone_pipeline
+            return await voice_clone_pipeline.run(task, worker_pool)
+
         job_id = task.job_id
         revision_id = task.revision_id
         task_type = task.task_type
@@ -47,15 +51,42 @@ class TalkingPhotoPipeline:
         master_audio = Path(revision.master_audio_path or revision.original_voice_path)
         inference_wav = Path(revision.inference_wav_path or master_audio)
 
+        # Verify master audio checksum before render if an active approval exists
+        from app.features.voice_clone.storage import voice_clone_storage
+        active_approval = voice_clone_storage.get_active_approval(job_id)
+        if active_approval and master_audio.exists():
+            import hashlib
+            hasher = hashlib.sha256()
+            with open(master_audio, "rb") as f:
+                while chunk := f.read(65536):
+                    hasher.update(chunk)
+            if hasher.hexdigest() != active_approval.wav_sha256:
+                raise RuntimeError("Master audio checksum mismatch: approved audio artifact was modified.")
+
         try:
             if task_type == "preview":
                 job_storage.set_job_status(job_id, JobState.PREVIEW_RENDERING, stage="preview_rendering")
                 preview_dest = workspace.get_tp_preview_path(job_id, revision_id)
 
+                # Trim dedicated <=5-second audio BEFORE model inference to save GPU time
+                preview_audio = output_dir / f"preview_inference_{revision_id}.wav"
+                from app.jobs.processes import run_process
+                from app.config import config
+                cmd_trim = [
+                    config.ffmpeg_path,
+                    "-y",
+                    "-i", str(inference_wav),
+                    "-t", "5.0",
+                    "-c:a", "pcm_s16le",
+                    str(preview_audio),
+                ]
+                await run_process(cmd_trim, timeout=30.0, cancel_check=cancel_check)
+                inference_to_run = preview_audio if preview_audio.exists() else inference_wav
+
                 async with gpu_scheduler.acquire(tag="talking_photo", job_id=job_id):
                     raw_video = await sadtalker_engine.run_animation(
                         image_path=image_path,
-                        audio_path=inference_wav,
+                        audio_path=inference_to_run,
                         output_dir=output_dir,
                         settings=revision.settings,
                         preview_mode=True,

@@ -43,6 +43,12 @@ class TalkingPhotoRevision:
     final_path: str | None = None
     input_digest: str = ""
     engine_version: str = "sadtalker-1.0"
+    audio_source: str = "recorded_voice"  # 'recorded_voice' | 'cloned_voice'
+    approved_audio_artifact_id: str | None = None
+    audio_approval_id: str | None = None
+    image_sha256: str = ""
+    settings_digest: str = ""
+    video_snapshot_digest: str = ""
     created_at: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -61,6 +67,12 @@ class TalkingPhotoRevision:
             "final_path": self.final_path,
             "input_digest": self.input_digest,
             "engine_version": self.engine_version,
+            "audio_source": self.audio_source,
+            "approved_audio_artifact_id": self.approved_audio_artifact_id,
+            "audio_approval_id": self.audio_approval_id,
+            "image_sha256": self.image_sha256,
+            "settings_digest": self.settings_digest,
+            "video_snapshot_digest": self.video_snapshot_digest,
             "created_at": self.created_at,
         }
 
@@ -92,6 +104,12 @@ class TalkingPhotoRevision:
             final_path=data.get("final_path"),
             input_digest=str(data.get("input_digest", "")),
             engine_version=str(data.get("engine_version", "sadtalker-1.0")),
+            audio_source=str(data.get("audio_source", "recorded_voice")),
+            approved_audio_artifact_id=data.get("approved_audio_artifact_id"),
+            audio_approval_id=data.get("audio_approval_id"),
+            image_sha256=str(data.get("image_sha256", "")),
+            settings_digest=str(data.get("settings_digest", "")),
+            video_snapshot_digest=str(data.get("video_snapshot_digest", "")),
             created_at=float(data.get("created_at", 0.0)),
         )
 

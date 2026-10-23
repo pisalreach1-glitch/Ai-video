@@ -108,11 +108,17 @@ async def handle_photo_upload(message: Message, state: FSMContext, bot: Bot) -> 
             return
 
         await state.update_data(photo_path=str(dest_path), photo_width=w, photo_height=h)
-        await state.set_state(TalkingPhotoSteps.waiting_voice)
+        from app.features.voice_clone.keyboards import tp_audio_source_keyboard
 
+        prompt = (
+            "✅ **ទទួលបានរូបថតជោគជ័យ!**\n\n"
+            "🎙️ **សូមជ្រើសរើសប្រភពសំឡេងសម្រាប់ Talking Photo៖**\n\n"
+            "1️⃣ **ប្រើសំឡេងថតផ្ទាល់ (Recorded Voice)**៖ ផ្ញើ ឬថតសំឡេង Voice របស់អ្នកផ្ទាល់\n"
+            "2️⃣ **Clone សំឡេងខ្លួនឯង (Voice Clone)**៖ ផ្ញើសំឡេងគំរូ + វាយអក្សរថ្មីដើម្បីឱ្យ AI បញ្ចូលសំឡេងរបស់អ្នក"
+        )
         await status_msg.edit_text(
-            texts.TP_VOICE_PROMPT,
-            reply_markup=tp_voice_prompt_keyboard(job_id),
+            prompt,
+            reply_markup=tp_audio_source_keyboard(job_id),
         )
     except Exception as e:
         logger.exception(f"Error handling photo upload: {e}")

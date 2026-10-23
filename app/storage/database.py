@@ -88,16 +88,73 @@ CREATE TABLE IF NOT EXISTS talking_photo_revisions (
     final_path TEXT,
     input_digest TEXT NOT NULL,
     engine_version TEXT,
+    audio_source TEXT NOT NULL DEFAULT 'recorded_voice', -- 'recorded_voice' | 'cloned_voice'
+    approved_audio_artifact_id TEXT,
+    audio_approval_id TEXT,
+    image_sha256 TEXT,
+    settings_digest TEXT,
+    video_snapshot_digest TEXT,
     created_at REAL NOT NULL,
     PRIMARY KEY (job_id, revision_id),
     FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS voice_references (
+    reference_id TEXT PRIMARY KEY,
+    owner_user_id INTEGER NOT NULL,
+    job_id TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    wav_path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    duration_seconds REAL NOT NULL,
+    sample_rate INTEGER NOT NULL,
+    channels INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS voice_clone_artifacts (
+    artifact_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    owner_user_id INTEGER NOT NULL,
+    reference_id TEXT NOT NULL,
+    reference_sha256 TEXT NOT NULL,
+    text TEXT NOT NULL,
+    text_sha256 TEXT NOT NULL,
+    language TEXT NOT NULL DEFAULT 'km',
+    backend_id TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    settings_json TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    wav_path TEXT,
+    wav_sha256 TEXT,
+    duration_seconds REAL NOT NULL DEFAULT 0.0,
+    manifest_path TEXT,
+    error_code TEXT,
+    created_at REAL NOT NULL,
+    FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE,
+    FOREIGN KEY (reference_id) REFERENCES voice_references (reference_id)
+);
+
+CREATE TABLE IF NOT EXISTS audio_approvals (
+    approval_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    wav_sha256 TEXT NOT NULL,
+    owner_user_id INTEGER NOT NULL,
+    approved_at REAL NOT NULL,
+    invalidated_at REAL,
+    FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE,
+    FOREIGN KEY (artifact_id) REFERENCES voice_clone_artifacts (artifact_id)
 );
 
 CREATE TABLE IF NOT EXISTS render_queue (
     job_id TEXT PRIMARY KEY,
     revision_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
-    task_type TEXT NOT NULL, -- 'preview' | 'final'
+    task_type TEXT NOT NULL, -- 'preview' | 'final' | 'clone_synthesis'
     status TEXT NOT NULL,    -- 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled'
     feature TEXT NOT NULL DEFAULT 'video_voiceover',
     input_digest TEXT,
@@ -110,6 +167,9 @@ CREATE TABLE IF NOT EXISTS render_queue (
 CREATE INDEX IF NOT EXISTS idx_jobs_user_chat ON jobs(user_id, chat_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_revisions_job_id ON revisions(job_id, revision_id);
 CREATE INDEX IF NOT EXISTS idx_talking_photo_revisions_job_id ON talking_photo_revisions(job_id, revision_id);
+CREATE INDEX IF NOT EXISTS idx_voice_refs_job ON voice_references(job_id);
+CREATE INDEX IF NOT EXISTS idx_voice_clone_job ON voice_clone_artifacts(job_id);
+CREATE INDEX IF NOT EXISTS idx_audio_approvals_job ON audio_approvals(job_id);
 CREATE INDEX IF NOT EXISTS idx_render_queue_status ON render_queue(status, enqueued_at ASC);
 """
 
@@ -159,6 +219,21 @@ class Database:
             conn.execute("ALTER TABLE revisions ADD COLUMN mode TEXT NOT NULL DEFAULT 'free_narration'")
         if "dubbing_plan_path" not in rev_cols:
             conn.execute("ALTER TABLE revisions ADD COLUMN dubbing_plan_path TEXT")
+
+        # Additive migration for talking_photo_revisions table
+        tp_cols = {row["name"] for row in conn.execute("PRAGMA table_info(talking_photo_revisions)").fetchall()}
+        if "audio_source" not in tp_cols:
+            conn.execute("ALTER TABLE talking_photo_revisions ADD COLUMN audio_source TEXT NOT NULL DEFAULT 'recorded_voice'")
+        if "approved_audio_artifact_id" not in tp_cols:
+            conn.execute("ALTER TABLE talking_photo_revisions ADD COLUMN approved_audio_artifact_id TEXT")
+        if "audio_approval_id" not in tp_cols:
+            conn.execute("ALTER TABLE talking_photo_revisions ADD COLUMN audio_approval_id TEXT")
+        if "image_sha256" not in tp_cols:
+            conn.execute("ALTER TABLE talking_photo_revisions ADD COLUMN image_sha256 TEXT")
+        if "settings_digest" not in tp_cols:
+            conn.execute("ALTER TABLE talking_photo_revisions ADD COLUMN settings_digest TEXT")
+        if "video_snapshot_digest" not in tp_cols:
+            conn.execute("ALTER TABLE talking_photo_revisions ADD COLUMN video_snapshot_digest TEXT")
 
         # Additive migration for render_queue table
         q_cols = {row["name"] for row in conn.execute("PRAGMA table_info(render_queue)").fetchall()}

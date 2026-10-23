@@ -6,7 +6,6 @@ from aiogram import Bot
 from app.config import config
 from app.domain.states import JobState
 from app.domain.features import QueueTask, JobFeature
-from app.features.registry import feature_registry
 from app.jobs.processes import kill_process_tree
 from app.storage.jobs import job_storage
 
@@ -136,6 +135,7 @@ class WorkerPool:
         )
 
         try:
+            from app.features.registry import feature_registry
             pipeline = feature_registry.get(job_feature)
             pipeline.validate_task_type(task_type)
             await pipeline.run(task, self)
