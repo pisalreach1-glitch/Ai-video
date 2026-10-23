@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS talking_photo_revisions (
     image_sha256 TEXT,
     settings_digest TEXT,
     video_snapshot_digest TEXT,
+    avatar_backend TEXT NOT NULL DEFAULT 'sadtalker', -- 'sadtalker' | 'wan2gp_hunyuan'
     created_at REAL NOT NULL,
     PRIMARY KEY (job_id, revision_id),
     FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE
@@ -105,6 +106,7 @@ CREATE TABLE IF NOT EXISTS voice_references (
     job_id TEXT NOT NULL,
     version INTEGER NOT NULL DEFAULT 1,
     wav_path TEXT NOT NULL,
+    reference_text TEXT NOT NULL DEFAULT '',
     sha256 TEXT NOT NULL,
     duration_seconds REAL NOT NULL,
     sample_rate INTEGER NOT NULL,
@@ -121,6 +123,7 @@ CREATE TABLE IF NOT EXISTS voice_clone_artifacts (
     reference_sha256 TEXT NOT NULL,
     text TEXT NOT NULL,
     text_sha256 TEXT NOT NULL,
+    reference_text TEXT NOT NULL DEFAULT '',
     language TEXT NOT NULL DEFAULT 'km',
     backend_id TEXT NOT NULL,
     model_version TEXT NOT NULL,
@@ -234,6 +237,18 @@ class Database:
             conn.execute("ALTER TABLE talking_photo_revisions ADD COLUMN settings_digest TEXT")
         if "video_snapshot_digest" not in tp_cols:
             conn.execute("ALTER TABLE talking_photo_revisions ADD COLUMN video_snapshot_digest TEXT")
+        if "avatar_backend" not in tp_cols:
+            conn.execute("ALTER TABLE talking_photo_revisions ADD COLUMN avatar_backend TEXT NOT NULL DEFAULT 'sadtalker'")
+
+        # Additive migration for voice_references
+        vr_cols = {row["name"] for row in conn.execute("PRAGMA table_info(voice_references)").fetchall()}
+        if "reference_text" not in vr_cols:
+            conn.execute("ALTER TABLE voice_references ADD COLUMN reference_text TEXT NOT NULL DEFAULT ''")
+
+        # Additive migration for voice_clone_artifacts
+        vca_cols = {row["name"] for row in conn.execute("PRAGMA table_info(voice_clone_artifacts)").fetchall()}
+        if "reference_text" not in vca_cols:
+            conn.execute("ALTER TABLE voice_clone_artifacts ADD COLUMN reference_text TEXT NOT NULL DEFAULT ''")
 
         # Additive migration for render_queue table
         q_cols = {row["name"] for row in conn.execute("PRAGMA table_info(render_queue)").fetchall()}

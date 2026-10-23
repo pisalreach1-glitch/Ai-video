@@ -60,6 +60,7 @@ class VoiceClonePipeline:
             output_dir=art_output_dir,
             model_version=artifact.model_version,
             settings_digest=artifact.request_digest,
+            reference_text=artifact.reference_text or reference.reference_text,
         )
 
         job_storage.set_job_status(job_id, JobState.RENDERING, stage="voice_clone_synthesizing")

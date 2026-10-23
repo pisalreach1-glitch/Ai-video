@@ -49,6 +49,7 @@ class TalkingPhotoRevision:
     image_sha256: str = ""
     settings_digest: str = ""
     video_snapshot_digest: str = ""
+    avatar_backend: str = "sadtalker"
     created_at: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -73,6 +74,7 @@ class TalkingPhotoRevision:
             "image_sha256": self.image_sha256,
             "settings_digest": self.settings_digest,
             "video_snapshot_digest": self.video_snapshot_digest,
+            "avatar_backend": self.avatar_backend,
             "created_at": self.created_at,
         }
 
@@ -110,8 +112,28 @@ class TalkingPhotoRevision:
             image_sha256=str(data.get("image_sha256", "")),
             settings_digest=str(data.get("settings_digest", "")),
             video_snapshot_digest=str(data.get("video_snapshot_digest", "")),
+            avatar_backend=str(data.get("avatar_backend", "sadtalker")),
             created_at=float(data.get("created_at", 0.0)),
         )
+
+@dataclass(frozen=True)
+class AvatarRequest:
+    task_id: str
+    snapshot_digest: str
+    source_image: str
+    approved_master_wav: str
+    audio_sha256: str
+    output_dir: str
+    preview_seconds: float | None = None
+    backend_id: str = "sadtalker"
+    motion_prompt: str = ""
+
+@dataclass(frozen=True)
+class AvatarResult:
+    video_path: str
+    manifest_path: str
+    duration_seconds: float
+    backend_revision: str
 
 @dataclass
 class TalkingPhotoInputManifest:

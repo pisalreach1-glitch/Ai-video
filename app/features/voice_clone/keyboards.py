@@ -17,8 +17,15 @@ def vc_reference_prompt_keyboard(job_id: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ ត្រឡប់", callback_data="nav_main")],
     ])
 
+def vc_transcript_prompt_keyboard(job_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎙️ ផ្ញើសំឡេងគំរូឡើងវិញ", callback_data=f"vc_re_ref:{job_id}")],
+        [InlineKeyboardButton(text="❌ បោះបង់", callback_data=f"job_cancel:{job_id}")],
+    ])
+
 def vc_text_prompt_keyboard(job_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ កែប្រែ Transcript សំឡេងគំរូ", callback_data=f"vc_ed_ref:{job_id}")],
         [InlineKeyboardButton(text="🎙️ ផ្ញើសំឡេងគំរូឡើងវិញ", callback_data=f"vc_re_ref:{job_id}")],
         [InlineKeyboardButton(text="❌ បោះបង់", callback_data=f"job_cancel:{job_id}")],
     ])

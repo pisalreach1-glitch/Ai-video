@@ -1,0 +1,27 @@
+{
+  "hardware_target": "NVIDIA GeForce RTX 3080",
+  "vram_total_gb": 10.0,
+  "vram_free_gb": 8.86,
+  "system_ram_gb": 15.78,
+  "supported_backends": {
+    "sadtalker": {
+      "status": "verified_production",
+      "recommended": true,
+      "max_audio_duration_seconds": 300,
+      "tested_duration_seconds": 120,
+      "canvas_sizes": [256, 512],
+      "preprocess_mode": "full",
+      "measured_speed_fps": 15.2,
+      "peak_vram_gb": 3.8
+    },
+    "wan2gp_hunyuan": {
+      "status": "experimental_low_vram",
+      "recommended": false,
+      "min_vram_gb": 10.0,
+      "max_audio_duration_seconds": 30,
+      "tested_duration_seconds": 10,
+      "canvas_sizes": [512],
+      "requires_offloading": true
+    }
+  }
+}

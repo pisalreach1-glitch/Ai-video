@@ -12,6 +12,7 @@ from app.features.voice_clone.validation import validate_reference_audio, normal
 from app.features.voice_clone.keyboards import (
     tp_audio_source_keyboard,
     vc_reference_prompt_keyboard,
+    vc_transcript_prompt_keyboard,
     vc_text_prompt_keyboard,
     vc_review_keyboard,
 )
@@ -94,10 +95,11 @@ async def handle_voice_reference_upload(message: Message, state: FSMContext) -> 
     raw_dest = ref_dir / "raw_reference.ogg"
 
     try:
-        downloaded = await download_media_file(message.bot, message, raw_dest)
-        if not downloaded:
-            await progress_msg.edit_text("❌ បរាជ័យក្នុងការទាញយកឯកសារសំឡេង។")
+        file_obj = message.voice or message.audio or message.document
+        if not file_obj:
+            await progress_msg.edit_text("❌ សូមផ្ញើឯកសារសំឡេង ឬ Voice។")
             return
+        await message.bot.download(file_obj.file_id, destination=raw_dest)
 
         dur, sr, ch = await validate_reference_audio(raw_dest, min_duration=3.0, max_duration=120.0)
         norm_dest = ref_dir / "reference.wav"
@@ -115,14 +117,14 @@ async def handle_voice_reference_upload(message: Message, state: FSMContext) -> 
         )
 
         await state.update_data(reference_id=ref.reference_id, reference_sha256=sha256)
-        await state.set_state(VoiceCloneSteps.waiting_text)
+        await state.set_state(VoiceCloneSteps.waiting_reference_transcript)
 
         await progress_msg.edit_text(
             f"✅ **ទទួលបានសំឡេងគំរូជោគជ័យ!** ({dur:.1f} វិនាទី)\n\n"
-            f"📝 **ជំហានទី ២៖ សូមផ្ញើអត្ថបទដែលអ្នកចង់ឱ្យសំឡេង Clone នេះនិយាយ៖**\n\n"
-            f"• វាយអក្សរ ឬ Copy អត្ថបទផ្ញើមកទីនេះ (គាំទ្រទាំងភាសាខ្មែរ និងអង់គ្លេស)\n"
-            f"• ប្រព័ន្ធនឹងរក្សាសញ្ញាខណ្ឌ (។) និងសង្វាក់ឃ្លាឱ្យត្រូវតាមក្បួនខ្នាត។",
-            reply_markup=vc_text_prompt_keyboard(job_id),
+            f"📝 **ជំហានទី ២៖ សូមវាយបញ្ចូលអត្ថបទដែលបាននិយាយក្នុងសំឡេងគំរូ (Reference Transcript)៖**\n\n"
+            f"• វាយអត្ថបទខ្លីដែលអ្នកបាននិយាយក្នុងសំឡេងគំរូខាងលើ\n"
+            f"• ម៉ូឌែល OmniVoice ត្រូវការអត្ថបទគំរូនេះ ដើម្បីផ្ទៀងផ្ទាត់ និងចម្លងទឹកដមរបស់អ្នកបានត្រឹមត្រូវ។",
+            reply_markup=vc_transcript_prompt_keyboard(job_id),
         )
 
     except ValueError as ve:
@@ -130,6 +132,36 @@ async def handle_voice_reference_upload(message: Message, state: FSMContext) -> 
     except Exception as e:
         logger.exception(f"Reference upload error: {e}")
         await progress_msg.edit_text(f"❌ ជួបបញ្ហាបច្ចេកទេស៖ {e}", reply_markup=vc_reference_prompt_keyboard(job_id))
+
+# -------------------------------------------------------------
+# 2.1. Collect Reference Transcript
+# -------------------------------------------------------------
+@router.message(VoiceCloneSteps.waiting_reference_transcript, F.text)
+async def handle_reference_transcript_input(message: Message, state: FSMContext) -> None:
+    ref_text = message.text.strip()
+    if not ref_text:
+        await message.answer("⚠️ សូមវាយបញ្ចូលអត្ថបទដែលមិនទទេ (Transcript cannot be empty)។")
+        return
+
+    data = await state.get_data()
+    job_id = data.get("job_id")
+    ref_id = data.get("reference_id")
+
+    if not job_id or not ref_id:
+        await message.answer("❌ បាត់បង់ទិន្នន័យសំឡេងគំរូ។ សូមចុច /start ដើម្បីចាប់ផ្តើមឡើងវិញ។")
+        return
+
+    voice_clone_storage.update_reference_text(ref_id, ref_text)
+    await state.update_data(reference_text=ref_text)
+    await state.set_state(VoiceCloneSteps.waiting_text)
+
+    await message.answer(
+        f"✅ **បានរក្សាទុក Transcript សំឡេងគំរូ៖** «{ref_text}»\n\n"
+        f"✍️ **ជំហានទី ៣៖ សូមផ្ញើអត្ថបទថ្មីដែលអ្នកចង់ឱ្យសំឡេង Clone នេះនិយាយ (Target Text)៖**\n\n"
+        f"• វាយអក្សរ ឬ Copy អត្ថបទថ្មីផ្ញើមកទីនេះ (គាំទ្រទាំងភាសាខ្មែរ និងអង់គ្លេស)\n"
+        f"• ប្រព័ន្ធនឹងរក្សាសញ្ញាខណ្ឌ (។) និងសង្វាក់ឃ្លាឱ្យត្រឹមត្រូវ។",
+        reply_markup=vc_text_prompt_keyboard(job_id),
+    )
 
 # -------------------------------------------------------------
 # 3. Collect Clone Text and Enqueue Synthesis
@@ -145,13 +177,14 @@ async def handle_clone_text_input(message: Message, state: FSMContext) -> None:
     job_id = data.get("job_id")
     ref_id = data.get("reference_id")
     ref_sha = data.get("reference_sha256", "")
+    ref_text = data.get("reference_text", "")
 
     if not job_id or not ref_id:
         await message.answer("❌ បាត់បង់ទិន្នន័យសំឡេងគំរូ។ សូមចុច /start ដើម្បីចាប់ផ្តើមឡើងវិញ។")
         return
 
     text_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    req_digest = hashlib.sha256(f"{ref_sha}:{text_sha}:1.0.0".encode("utf-8")).hexdigest()
+    req_digest = hashlib.sha256(f"{ref_sha}:{text_sha}:{ref_text}:1.0.0".encode("utf-8")).hexdigest()
 
     # Create artifact
     art = voice_clone_storage.create_artifact(
@@ -165,6 +198,7 @@ async def handle_clone_text_input(message: Message, state: FSMContext) -> None:
         language="km",
         backend_id="local",
         model_version="1.0.0",
+        reference_text=ref_text,
     )
 
     # Invalidate any old audio approvals for this job
@@ -259,6 +293,19 @@ async def cb_edit_clone_text(callback: CallbackQuery, state: FSMContext) -> None
     await callback.message.answer(
         "📝 **សូមផ្ញើអត្ថបទថ្មីដែលអ្នកចង់កែសម្រួល៖**",
         reply_markup=vc_text_prompt_keyboard(job_id),
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("vc_ed_ref:"))
+async def cb_edit_reference_transcript(callback: CallbackQuery, state: FSMContext) -> None:
+    parts = callback.data.split(":")
+    job_id = parts[1]
+
+    voice_clone_storage.invalidate_approvals(job_id)
+    await state.set_state(VoiceCloneSteps.waiting_reference_transcript)
+    await callback.message.answer(
+        "📝 **សូមវាយបញ្ចូល Transcript ថ្មីសម្រាប់សំឡេងគំរូរបស់អ្នក៖**",
+        reply_markup=vc_transcript_prompt_keyboard(job_id),
     )
     await callback.answer()
 

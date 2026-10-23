@@ -27,6 +27,7 @@ class CloneRequest:
     output_dir: Path
     model_version: str
     settings_digest: str
+    reference_text: str = ""
 
 @dataclass(frozen=True)
 class CloneOutput:
@@ -35,6 +36,9 @@ class CloneOutput:
     manifest_path: Path
     duration_seconds: float
     sha256: str
+
+# Project contract alias per Section 4
+AudioArtifact = CloneOutput
 
 class VoiceCloneBackend(Protocol):
     async def capabilities(self) -> CloneCapabilities:
@@ -60,6 +64,7 @@ class VoiceReference:
     duration_seconds: float = 0.0
     sample_rate: int = 24000
     channels: int = 1
+    reference_text: str = ""
     created_at: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -77,6 +82,7 @@ class VoiceReference:
             duration_seconds=float(data.get("duration_seconds", 0.0)),
             sample_rate=int(data.get("sample_rate", 24000)),
             channels=int(data.get("channels", 1)),
+            reference_text=str(data.get("reference_text", "")),
             created_at=float(data.get("created_at", 0.0)),
         )
 
@@ -100,6 +106,7 @@ class VoiceCloneArtifact:
     duration_seconds: float = 0.0
     manifest_path: str | None = None
     error_code: str | None = None
+    reference_text: str = ""
     created_at: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -126,6 +133,7 @@ class VoiceCloneArtifact:
             duration_seconds=float(data.get("duration_seconds", 0.0)),
             manifest_path=data.get("manifest_path"),
             error_code=data.get("error_code"),
+            reference_text=str(data.get("reference_text", "")),
             created_at=float(data.get("created_at", 0.0)),
         )
 

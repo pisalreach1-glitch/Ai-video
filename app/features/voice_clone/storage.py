@@ -23,6 +23,7 @@ class VoiceCloneStorage:
         sample_rate: int = 24000,
         channels: int = 1,
         reference_id: str | None = None,
+        reference_text: str = "",
     ) -> VoiceReference:
         conn = self.db.get_connection()
         now = time.time()
@@ -39,8 +40,8 @@ class VoiceCloneStorage:
             """
             INSERT INTO voice_references (
                 reference_id, owner_user_id, job_id, version,
-                wav_path, sha256, duration_seconds, sample_rate, channels, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                wav_path, reference_text, sha256, duration_seconds, sample_rate, channels, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ref_id,
@@ -48,6 +49,7 @@ class VoiceCloneStorage:
                 job_id,
                 version,
                 str(wav_path),
+                reference_text,
                 sha256,
                 duration_seconds,
                 sample_rate,
@@ -61,11 +63,19 @@ class VoiceCloneStorage:
             job_id=job_id,
             version=version,
             wav_path=str(wav_path),
+            reference_text=reference_text,
             sha256=sha256,
             duration_seconds=duration_seconds,
             sample_rate=sample_rate,
             channels=channels,
             created_at=now,
+        )
+
+    def update_reference_text(self, reference_id: str, reference_text: str) -> None:
+        conn = self.db.get_connection()
+        conn.execute(
+            "UPDATE voice_references SET reference_text = ? WHERE reference_id = ?",
+            (reference_text, reference_id)
         )
 
     def get_reference(self, reference_id: str) -> VoiceReference | None:
@@ -102,6 +112,7 @@ class VoiceCloneStorage:
         model_version: str = "1.0",
         settings: dict[str, Any] | None = None,
         artifact_id: str | None = None,
+        reference_text: str = "",
     ) -> VoiceCloneArtifact:
         conn = self.db.get_connection()
         now = time.time()
@@ -112,10 +123,10 @@ class VoiceCloneStorage:
             """
             INSERT INTO voice_clone_artifacts (
                 artifact_id, job_id, owner_user_id, reference_id, reference_sha256,
-                text, text_sha256, language, backend_id, model_version, settings_json,
+                text, text_sha256, reference_text, language, backend_id, model_version, settings_json,
                 request_digest, state, wav_path, wav_sha256, duration_seconds,
                 manifest_path, error_code, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, 0.0, NULL, NULL, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, 0.0, NULL, NULL, ?)
             """,
             (
                 art_id,
@@ -125,6 +136,7 @@ class VoiceCloneStorage:
                 reference_sha256,
                 text,
                 text_sha256,
+                reference_text,
                 language,
                 backend_id,
                 model_version,
@@ -141,6 +153,7 @@ class VoiceCloneStorage:
             reference_sha256=reference_sha256,
             text=text,
             text_sha256=text_sha256,
+            reference_text=reference_text,
             language=language,
             backend_id=backend_id,
             model_version=model_version,
