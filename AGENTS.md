@@ -10,3 +10,9 @@
 - **Telegram Callbacks**: Keep callback data length strictly $\le 64$ bytes per Telegram Bot API specification.
 - **Audio & Video Processing**: Video narration, subtitles, and audio mixing must preserve full duration and synchronization.
 - **Security & Privacy**: Never commit `.env` or print secret tokens/keys (`TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`).
+
+## Bot Auto-Start & Background Execution
+- **PC Startup Auto-Run**: The bot must always be configured to launch automatically in the background (hidden/silent, no blocking console window) on PC boot / Windows logon.
+- **Background Launcher**: Use `start_bot_background.vbs` targeting `pythonw bot.py` placed or linked in the Windows Startup directory (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`).
+- **Logging**: Running under background `pythonw` writes all logs to `runtime/bot.log`.
+

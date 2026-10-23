@@ -12,10 +12,20 @@ from app.storage.cleanup import cleanup_expired_jobs
 from app.jobs.worker import worker_pool
 from app.handlers import register_all_handlers
 
+from pathlib import Path
+
+# Setup logging handlers safely (supports console and pythonw background execution)
+_log_handlers = []
+if sys.stdout is not None:
+    _log_handlers.append(logging.StreamHandler(sys.stdout))
+_log_dir = Path(__file__).resolve().parent.parent / "runtime"
+_log_dir.mkdir(parents=True, exist_ok=True)
+_log_handlers.append(logging.FileHandler(_log_dir / "bot.log", encoding="utf-8"))
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
+    handlers=_log_handlers,
 )
 logger = logging.getLogger("voiceover_bot")
 
