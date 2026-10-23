@@ -18,13 +18,16 @@ logger = logging.getLogger(__name__)
 
 class TalkingPhotoPipeline:
     def validate_task_type(self, task_type: str) -> None:
-        if task_type not in ("preview", "final", "clone_synthesis"):
+        if task_type not in ("preview", "final", "clone_synthesis", "voice_conversion"):
             raise ValueError(f"Unsupported task_type '{task_type}' for talking_photo pipeline.")
 
     async def run(self, task: QueueTask, worker_pool: Any) -> None:
         if task.task_type == "clone_synthesis":
             from app.features.voice_clone.pipeline import voice_clone_pipeline
             return await voice_clone_pipeline.run(task, worker_pool)
+        if task.task_type == "voice_conversion":
+            from app.features.voice_conversion.pipeline import voice_conversion_pipeline
+            return await voice_conversion_pipeline.run(task, worker_pool)
 
         job_id = task.job_id
         revision_id = task.revision_id
@@ -62,6 +65,18 @@ class TalkingPhotoPipeline:
                     hasher.update(chunk)
             if hasher.hexdigest() != active_approval.wav_sha256:
                 raise RuntimeError("Master audio checksum mismatch: approved audio artifact was modified.")
+
+        if revision.audio_source == "converted_voice" and master_audio.exists():
+            from app.features.voice_conversion.storage import voice_conversion_storage
+            conv = voice_conversion_storage.get_latest_conversion_for_job(job_id)
+            if conv and conv.converted_wav_sha256:
+                import hashlib
+                hasher = hashlib.sha256()
+                with open(master_audio, "rb") as f:
+                    while chunk := f.read(65536):
+                        hasher.update(chunk)
+                if hasher.hexdigest() != conv.converted_wav_sha256:
+                    raise RuntimeError("Master audio checksum mismatch: converted audio artifact was modified.")
 
         try:
             if task_type == "preview":

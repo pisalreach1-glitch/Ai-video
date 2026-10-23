@@ -153,11 +153,33 @@ CREATE TABLE IF NOT EXISTS audio_approvals (
     FOREIGN KEY (artifact_id) REFERENCES voice_clone_artifacts (artifact_id)
 );
 
+CREATE TABLE IF NOT EXISTS voice_conversions (
+    conversion_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    owner_user_id INTEGER NOT NULL,
+    target_reference_path TEXT NOT NULL,
+    target_reference_sha256 TEXT NOT NULL,
+    target_reference_duration REAL NOT NULL DEFAULT 0.0,
+    full_source_path TEXT NOT NULL,
+    full_source_sha256 TEXT NOT NULL,
+    full_source_duration REAL NOT NULL DEFAULT 0.0,
+    converted_wav_path TEXT,
+    converted_wav_sha256 TEXT,
+    converted_duration REAL NOT NULL DEFAULT 0.0,
+    state TEXT NOT NULL DEFAULT 'pending',
+    backend_id TEXT NOT NULL DEFAULT 'seed_vc',
+    request_digest TEXT NOT NULL,
+    manifest_path TEXT,
+    error_code TEXT,
+    created_at REAL NOT NULL,
+    FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS render_queue (
     job_id TEXT PRIMARY KEY,
     revision_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
-    task_type TEXT NOT NULL, -- 'preview' | 'final' | 'clone_synthesis'
+    task_type TEXT NOT NULL, -- 'preview' | 'final' | 'clone_synthesis' | 'voice_conversion'
     status TEXT NOT NULL,    -- 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled'
     feature TEXT NOT NULL DEFAULT 'video_voiceover',
     input_digest TEXT,
@@ -173,6 +195,7 @@ CREATE INDEX IF NOT EXISTS idx_talking_photo_revisions_job_id ON talking_photo_r
 CREATE INDEX IF NOT EXISTS idx_voice_refs_job ON voice_references(job_id);
 CREATE INDEX IF NOT EXISTS idx_voice_clone_job ON voice_clone_artifacts(job_id);
 CREATE INDEX IF NOT EXISTS idx_audio_approvals_job ON audio_approvals(job_id);
+CREATE INDEX IF NOT EXISTS idx_voice_conversions_job ON voice_conversions(job_id);
 CREATE INDEX IF NOT EXISTS idx_render_queue_status ON render_queue(status, enqueued_at ASC);
 """
 

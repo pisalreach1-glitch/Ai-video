@@ -5,7 +5,7 @@ def tp_audio_source_keyboard(job_id: str) -> InlineKeyboardMarkup:
     """Choose between user's own recorded voice and local voice cloning."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎤 ប្រើសំឡេងថតផ្ទាល់ (Recorded Voice)", callback_data=f"tp_src_rec:{job_id}")],
-        [InlineKeyboardButton(text="🗣️ Clone សំឡេងខ្លួនឯង (Voice Clone)", callback_data=f"tp_src_cln:{job_id}")],
+        [InlineKeyboardButton(text="🗣️ បម្លែងសំឡេង Voice (Voice Conversion)", callback_data=f"tp_src_vc:{job_id}")],
         [InlineKeyboardButton(text="🔄 ប្តូររូបថតផ្សេង", callback_data=f"tp_change_photo:{job_id}:1")],
         [InlineKeyboardButton(text="⬅️ ត្រឡប់ទៅម៉ឺនុយដើម", callback_data="nav_main")],
     ])
