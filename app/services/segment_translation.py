@@ -12,8 +12,9 @@ from app.domain.dubbing import SourceSegment, TranslatedSegment
 
 logger = logging.getLogger(__name__)
 
-TRANSLATION_TIMEOUT_SECONDS = 120.0
+TRANSLATION_TIMEOUT_SECONDS = 300.0
 TRANSLATION_PROGRESS_SECONDS = 10.0
+GEMINI_HTTP_TIMEOUT_MS = 90000
 
 class TranslationCancelledError(RuntimeError):
     """User cancelled translation; never convert this to manual-review success."""
@@ -159,10 +160,10 @@ async def _translate_single_batch_gemini(
     async def _call_gemini() -> tuple[str, Any]:
         client = genai.Client(
             api_key=api_key,
-            http_options=types.HttpOptions(timeout=20000, retry_options=types.HttpRetryOptions(attempts=1)),
+            http_options=types.HttpOptions(timeout=GEMINI_HTTP_TIMEOUT_MS, retry_options=types.HttpRetryOptions(attempts=1)),
         )
-        preferred = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
-        candidate_models = [preferred, "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash"]
+        preferred = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        candidate_models = [preferred, "gemini-2.5-flash", "gemini-3-flash-preview", "gemini-flash-latest"]
         seen = set()
         models_to_try = [m for m in candidate_models if not (m in seen or seen.add(m))]
 
@@ -185,8 +186,14 @@ async def _translate_single_batch_gemini(
                     return (res.text or "").strip(), getattr(res, "parsed", None)
                 except Exception as e:
                     err_msg = str(e)
-                    if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "503" in err_msg or "404" in err_msg:
-                        logger.warning(f"Model {model_name} failed ({type(e).__name__}). Trying next fallback model...")
+                    is_transient = any(
+                        kw in err_msg for kw in (
+                            "429", "RESOURCE_EXHAUSTED", "500", "502", "503", "UNAVAILABLE",
+                            "504", "DEADLINE_EXCEEDED", "timeout", "timed out", "ServerError", "ClientError",
+                        )
+                    )
+                    if is_transient:
+                        logger.warning(f"Model {model_name} failed ({type(e).__name__}: {e}). Trying next fallback model...")
                         last_err = e
                         continue
                     raise e

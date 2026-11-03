@@ -100,6 +100,6 @@ async def test_async_gemini_timeout_options_and_client_cleanup(monkeypatch):
 
     monkeypatch.setattr(genai, "Client", client)
     result = await translation._translate_single_batch_gemini(source(), "fixture")
-    assert captured["http_options"].timeout == 20000
+    assert captured["http_options"].timeout == translation.GEMINI_HTTP_TIMEOUT_MS
     assert captured["closed"]
     assert result[0].segment_id == "s001"
