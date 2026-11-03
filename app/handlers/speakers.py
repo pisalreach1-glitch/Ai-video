@@ -1215,16 +1215,57 @@ async def cb_speaker_full_preview(call: CallbackQuery) -> None:
     )
 
     if full_preview_path.exists() and not worker_pool.is_cancelled(job_id):
-        video_input = FSInputFile(str(full_preview_path), filename="preview_full.mp4")
-        await call.message.reply_video(
-            video=video_input,
-            caption=(
-                "🎬 **Full Timeline Video Preview (ពិនិត្យវីដេអូពេញលេញ)៖**\n\n"
-                "• បានតម្រឹមសំឡេង AI គ្រប់តួអង្គតាមពេលវេលាដើម\n"
-                "• មិនមានបញ្ហាដែលប្រព័ន្ធបានរកឃើញ។ សូមពិនិត្យ Preview មុនបញ្ជាក់។"
-            ),
-            supports_streaming=True,
-        )
+        file_size_mb = full_preview_path.stat().st_size / (1024 * 1024)
+        logger.info(f"Full preview generated: {full_preview_path} ({file_size_mb:.2f} MB)")
+        try:
+            if file_size_mb <= 49.0:
+                video_input = FSInputFile(str(full_preview_path), filename="preview_full.mp4")
+                await call.message.reply_video(
+                    video=video_input,
+                    caption=(
+                        "🎬 **Full Timeline Video Preview (ពិនិត្យវីដេអូពេញលេញ)៖**\n\n"
+                        "• បានតម្រឹមសំឡេង AI គ្រប់តួអង្គតាមពេលវេលាដើម\n"
+                        "• មិនមានបញ្ហាដែលប្រព័ន្ធបានរកឃើញ។ សូមពិនិត្យ Preview មុនបញ្ជាក់。"
+                    ),
+                    supports_streaming=True,
+                    request_timeout=300,
+                )
+            else:
+                sent = False
+                try:
+                    from app.services.tg_downloader import get_pyrogram_client
+                    pyro = await get_pyrogram_client()
+                    if pyro:
+                        await pyro.send_video(
+                            chat_id=call.message.chat.id,
+                            video=str(full_preview_path),
+                            caption=(
+                                "🎬 **Full Timeline Video Preview (ពិនិត្យវីដេអូពេញលេញ)៖**\n\n"
+                                "• បានតម្រឹមសំឡេង AI គ្រប់តួអង្គតាមពេលវេលាដើម\n"
+                                "• មិនមានបញ្ហាដែលប្រព័ន្ធបានរកឃើញ។ សូមពិនិត្យ Preview មុនបញ្ជាក់。"
+                            ),
+                            supports_streaming=True,
+                        )
+                        sent = True
+                except Exception as pe:
+                    logger.warning(f"Pyrogram preview upload failed: {pe}")
+
+                if not sent and timeline_wav.exists():
+                    audio_input = FSInputFile(str(timeline_wav), filename="preview_audio.wav")
+                    await call.message.reply_audio(
+                        audio=audio_input,
+                        caption=(
+                            f"🎬 **Timeline Audio Preview (សំឡេងពេញលេញ)៖**\n\n"
+                            f"⚠️ វីដេអូ Preview មានទំហំធំ ({file_size_mb:.1f} MB) លើសពីដែនកំណត់ 50 MB របស់ Telegram Bot API។\n"
+                            f"លោកអ្នកអាចស្ដាប់សំឡេងតម្រឹមនេះបាន ឬចុចបញ្ជាក់ (Approve) ដើម្បី Render វីដេអូផ្លូវការបានភ្លាមៗ。"
+                        ),
+                    )
+        except Exception as upload_err:
+            logger.warning(f"Failed to upload full preview video to user: {upload_err}")
+            await call.message.answer(
+                "⚠️ ការផ្ញើ file វីដេអូ Preview ទៅកាន់ Telegram បានផុតកំណត់ម៉ោង (Network Timeout) ដោយសារទំហំ file ធំ។ "
+                "ប៉ុន្តែការរៀបចំសំឡេងបានចប់សព្វគ្រប់ហើយ។ លោកអ្នកអាចចុចបញ្ជាក់ខាងក្រោមដើម្បី Render ចុងក្រោយបាន។"
+            )
 
     # Re-render card with "Approve" button unlocked
     await render_speaker_card(

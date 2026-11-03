@@ -90,6 +90,8 @@ async def render_video(
     cancel_check: Callable[[], bool] | None = None,
     on_pid: Callable[[int], None] | None = None,
     mode: str = "free_narration",
+    crf: str = "22",
+    preset: str = "fast",
 ) -> Path:
     """
     Renders video using FFmpeg with proper aspect ratio, framing, audio mix, and subtitles.
@@ -136,8 +138,8 @@ async def render_video(
         "-map", "[vout]",
         "-map", a_map[0],
         "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "22",
+        "-preset", preset,
+        "-crf", crf,
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", "192k",
