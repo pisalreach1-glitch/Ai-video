@@ -476,6 +476,16 @@ class JobStorage:
             )
             count += 1
 
+        # ASR/translation run in handlers, outside render_queue. Make their
+        # saved source reusable after restart instead of leaving a stuck job.
+        recovered_translation = conn.execute(
+            """UPDATE jobs SET status = ?, stage = ?, error_message = ?, updated_at = ?
+               WHERE status IN (?, ?)""",
+            (JobState.AWAITING_TEXT.value, "translation_interrupted",
+             "Translation interrupted by restart; saved source retained.", now,
+             JobState.ANALYZING_SOURCE.value, JobState.TRANSLATING_SEGMENTS.value),
+        )
+        count += recovered_translation.rowcount
         return count
 
     # ---------------- History & Active Jobs ----------------

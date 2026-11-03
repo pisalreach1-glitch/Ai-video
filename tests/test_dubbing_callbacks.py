@@ -55,7 +55,8 @@ async def test_stale_dubbing_callback_rejection(temp_job_storage):
     assert rev2.revision_id == latest_job.current_revision_id
 
 @pytest.mark.asyncio
-async def test_dubbing_auto_translate_callback(temp_job_storage, monkeypatch):
+@pytest.mark.parametrize("provider_failed", [False, True])
+async def test_dubbing_auto_translate_callback(temp_job_storage, monkeypatch, provider_failed):
     """Ensure d_ai callback triggers AI translation and updates DubbingPlan."""
     from app.domain.states import JobState
     from app.domain.dubbing import SourceSegment, TranslatedSegment, DubbingPlan
@@ -79,12 +80,14 @@ async def test_dubbing_auto_translate_callback(temp_job_storage, monkeypatch):
         source_duration_ms=2000,
         sample_rate=48000,
         segments=sources,
-        translations=[TranslatedSegment(segment_id="s001", translated_text="", translation_provider="manual", status="needs_review")],
+        translations=[TranslatedSegment(segment_id="s001", translated_text="អត្ថបទបានកែ", translation_provider="manual", status="ready")],
     )
     save_dubbing_plan(job.job_id, 1, plan)
 
     # Mock translate_segments to return Khmer text
-    async def mock_translate(segs, provider=None, cancel_check=None):
+    async def mock_translate(segs, provider=None, cancel_check=None, on_progress=None):
+        if provider_failed:
+            return [TranslatedSegment(segment_id="s001", translated_text="", translation_provider="manual", status="needs_review")]
         return [TranslatedSegment(segment_id="s001", translated_text="សួស្តីពិភពលោក", translation_provider="gemini", status="ready")]
 
     monkeypatch.setattr("app.services.segment_translation.translate_segments", mock_translate)
@@ -105,8 +108,9 @@ async def test_dubbing_auto_translate_callback(temp_job_storage, monkeypatch):
     # Verify plan translations updated to Khmer
     updated_plan = load_dubbing_plan(job.job_id, 1)
     assert updated_plan is not None
-    assert updated_plan.translations[0].translated_text == "សួស្តីពិភពលោក"
+    assert updated_plan.translations[0].translated_text == ("អត្ថបទបានកែ" if provider_failed else "សួស្តីពិភពលោក")
     assert updated_plan.translations[0].status == "ready"
+    assert temp_job_storage.get_job(job.job_id).status == JobState.AWAITING_SEGMENT_REVIEW
 
 async def _async_noop(*args, **kwargs):
     pass

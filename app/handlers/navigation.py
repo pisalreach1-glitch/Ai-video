@@ -18,6 +18,7 @@ from app.ui.keyboards import (
     main_menu_keyboard,
     interrupted_job_keyboard,
     active_job_picker_keyboard,
+    mode_choice_keyboard,
 )
 from app.features.talking_photo.states import TalkingPhotoSteps
 from app.features.talking_photo.storage import talking_photo_storage
@@ -74,6 +75,15 @@ async def _resume_single_job(call: CallbackQuery, state: FSMContext, job) -> Non
         await safe_edit_message(call, texts.SOURCE_PROMPT, reply_markup=source_choice_keyboard(), prefer_new_for_media=True)
 
     elif status == JobState.AWAITING_TEXT:
+        if job.stage == "translation_interrupted":
+            await state.set_state(WizardStep.mode_choice)
+            await safe_edit_message(
+                call,
+                "⚠️ ការបកប្រែត្រូវបានផ្អាកពេល Bot ចាប់ផ្ដើមឡើងវិញ។ វីដេអូដើមត្រូវបានរក្សាទុក។ សូមជ្រើសរើសបកប្រែម្ដងទៀត។",
+                reply_markup=mode_choice_keyboard(job_id, has_caption=False),
+                prefer_new_for_media=True,
+            )
+            return
         await state.set_state(WizardStep.awaiting_narration_text)
         await safe_edit_message(
             call,

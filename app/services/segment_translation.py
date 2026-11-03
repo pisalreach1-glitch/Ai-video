@@ -6,11 +6,46 @@ import json
 import asyncio
 import logging
 import unicodedata
-from typing import Callable, Any
+from typing import Callable, Any, Awaitable
 from app.config import config
 from app.domain.dubbing import SourceSegment, TranslatedSegment
 
 logger = logging.getLogger(__name__)
+
+TRANSLATION_TIMEOUT_SECONDS = 120.0
+TRANSLATION_PROGRESS_SECONDS = 10.0
+
+class TranslationCancelledError(RuntimeError):
+    """User cancelled translation; never convert this to manual-review success."""
+
+async def _wait_for_translation(operation, cancel_check=None, on_progress=None):
+    """Bound the complete operation and keep cancellation responsive while awaiting AI."""
+    if cancel_check and cancel_check():
+        operation.close()
+        raise TranslationCancelledError("Translation cancelled.")
+    task = asyncio.create_task(operation)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    next_progress = TRANSLATION_PROGRESS_SECONDS
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=0.25)
+            if cancel_check and cancel_check():
+                raise TranslationCancelledError("Translation cancelled.")
+            if done:
+                return task.result()
+            elapsed = loop.time() - started
+            if elapsed >= TRANSLATION_TIMEOUT_SECONDS:
+                raise TimeoutError("Translation exceeded its time limit.")
+            if on_progress and elapsed >= next_progress:
+                try:
+                    await asyncio.wait_for(on_progress(int(elapsed)), timeout=5.0)
+                except Exception:
+                    logger.warning("Could not update translation progress.")
+                next_progress = elapsed + TRANSLATION_PROGRESS_SECONDS
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 class TranslationValidationError(Exception):
     """Raised when translation output fails segment map validation."""
@@ -121,10 +156,10 @@ async def _translate_single_batch_gemini(
         f"{json.dumps(request_payload, ensure_ascii=False, indent=2)}"
     )
 
-    def _call_gemini() -> tuple[str, Any]:
+    async def _call_gemini() -> tuple[str, Any]:
         client = genai.Client(
             api_key=api_key,
-            http_options=types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=1)),
+            http_options=types.HttpOptions(timeout=20000, retry_options=types.HttpRetryOptions(attempts=1)),
         )
         preferred = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
         candidate_models = [preferred, "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash"]
@@ -132,34 +167,38 @@ async def _translate_single_batch_gemini(
         models_to_try = [m for m in candidate_models if not (m in seen or seen.add(m))]
 
         last_err = None
-        for model_name in models_to_try:
-            try:
-                res = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.2,
-                        response_mime_type="application/json",
-                        response_schema=BatchSchema,
+        async with client.aio as async_client:
+            for model_name in models_to_try:
+                if cancel_check and cancel_check():
+                    raise TranslationCancelledError("Translation cancelled.")
+                try:
+                    logger.info("Translating %s segments using %s", len(segments), model_name)
+                    res = await async_client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            temperature=0.2,
+                            response_mime_type="application/json",
+                            response_schema=BatchSchema,
+                        )
                     )
-                )
-                return (res.text or "").strip(), getattr(res, "parsed", None)
-            except Exception as e:
-                err_msg = str(e)
-                if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "503" in err_msg or "404" in err_msg:
-                    logger.warning(f"Model {model_name} failed ({type(e).__name__}). Trying next fallback model...")
-                    last_err = e
-                    continue
-                raise e
+                    return (res.text or "").strip(), getattr(res, "parsed", None)
+                except Exception as e:
+                    err_msg = str(e)
+                    if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "503" in err_msg or "404" in err_msg:
+                        logger.warning(f"Model {model_name} failed ({type(e).__name__}). Trying next fallback model...")
+                        last_err = e
+                        continue
+                    raise e
         raise last_err or RuntimeError("All candidate Gemini models failed.")
 
     if cancel_check and cancel_check():
-        raise RuntimeError("Translation cancelled before start.")
+        raise TranslationCancelledError("Translation cancelled before start.")
 
-    raw_json, parsed_obj = await asyncio.to_thread(_call_gemini)
+    raw_json, parsed_obj = await _call_gemini()
 
     if cancel_check and cancel_check():
-        raise RuntimeError("Translation cancelled.")
+        raise TranslationCancelledError("Translation cancelled.")
 
     if parsed_obj is not None:
         try:
@@ -197,11 +236,15 @@ async def translate_segments_gemini(
         try:
             batch_res = await _translate_single_batch_gemini(batch, api_key, cancel_check=cancel_check)
             results.extend(batch_res)
+        except TranslationCancelledError:
+            raise
         except Exception as e:
             logger.warning(f"Batch {i//BATCH_SIZE + 1} translation error: {e}. Retrying once...")
             try:
                 batch_res = await _translate_single_batch_gemini(batch, api_key, cancel_check=cancel_check)
                 results.extend(batch_res)
+            except TranslationCancelledError:
+                raise
             except Exception as e2:
                 logger.error(f"Batch {i//BATCH_SIZE + 1} retry failed: {e2}. Marking batch as needs_review.")
                 for s in batch:
@@ -218,6 +261,7 @@ async def translate_segments(
     segments: list[SourceSegment],
     provider: str | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    on_progress: Callable[[int], Awaitable[None]] | None = None,
 ) -> list[TranslatedSegment]:
     """
     Main entry point for segment-level translation:
@@ -228,12 +272,20 @@ async def translate_segments(
     if not segments:
         return []
 
+    if cancel_check and cancel_check():
+        raise TranslationCancelledError("Translation cancelled.")
+
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     selected_provider = provider if provider is not None else config.translation_provider
 
     if selected_provider == "gemini" and api_key:
         try:
-            return await translate_segments_gemini(segments, api_key, cancel_check=cancel_check)
+            return await _wait_for_translation(
+                translate_segments_gemini(segments, api_key, cancel_check=cancel_check),
+                cancel_check=cancel_check, on_progress=on_progress,
+            )
+        except TranslationCancelledError:
+            raise
         except Exception as e:
             logger.warning(f"Gemini segment translation failed: {e}. Falling back to manual review segments.")
 

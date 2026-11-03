@@ -23,6 +23,7 @@ from app.ui.keyboards import (
     dubbing_review_keyboard,
     dubbing_fit_resolution_keyboard,
     video_preview_review_keyboard,
+    job_in_progress_keyboard,
 )
 from app.services.segment_translation import (
     shorten_single_segment_khmer,
@@ -123,7 +124,7 @@ async def cb_dubbing_auto_translate(call: CallbackQuery, state: FSMContext) -> N
         return
 
     from app.storage.dubbing import load_source_segments, load_dubbing_plan, save_dubbing_plan
-    from app.services.segment_translation import translate_segments
+    from app.services.segment_translation import translate_segments, TranslationCancelledError
     import shutil
 
     source_segments = load_source_segments(job_id)
@@ -132,14 +133,38 @@ async def cb_dubbing_auto_translate(call: CallbackQuery, state: FSMContext) -> N
         return
 
     await call.answer("⏳ កំពុងបកប្រែដោយ AI...")
-    await safe_edit_message(call, "⏳ កំពុងបកប្រែឃ្លាទាំងអស់ជាភាសាខ្មែរតាម AI (Gemini)... សូមរង់ចាំបន្តិច។")
+    job_storage.set_job_status(job_id, JobState.TRANSLATING_SEGMENTS, stage="translating_segments")
+    await safe_edit_message(call, texts.DUBBING_TRANSLATING, reply_markup=job_in_progress_keyboard(job_id))
+
+    def cancelled():
+        current = job_storage.get_job(job_id)
+        return not current or current.status == JobState.CANCELLED
+
+    async def translation_progress(elapsed):
+        await safe_edit_message(
+            call, texts.DUBBING_TRANSLATING + f"\n⏱ រង់ចាំ {elapsed} វិនាទី។ អាចចុចបោះបង់បាន។",
+            reply_markup=job_in_progress_keyboard(job_id),
+        )
 
     try:
-        translated_segments = await translate_segments(source_segments, provider="gemini")
+        translated_segments = await translate_segments(
+            source_segments, provider="gemini", cancel_check=cancelled,
+            on_progress=translation_progress,
+        )
+        if cancelled():
+            return
         plan = load_dubbing_plan(job_id, revision_id)
         if plan:
-            plan.translations = translated_segments
+            # A provider outage must not erase translations already reviewed by the user.
+            previous = {t.segment_id: t for t in plan.translations}
+            plan.translations = [
+                previous.get(t.segment_id, t) if t.status == "needs_review" else t
+                for t in translated_segments
+            ]
             save_dubbing_plan(job_id, revision_id, plan)
+
+        if any(t.status == "needs_review" for t in translated_segments):
+            await call.message.answer("⚠️ ការបកប្រែ AI មិនទាន់បានបញ្ចប់គ្រប់ឃ្លាទេ។ អត្ថបទចាស់ត្រូវបានរក្សាទុក។ សូមសាកល្បងម្ដងទៀត ឬកែឃ្លាដោយដៃ។")
 
         # Invalidate any cached segment audio so new translations will generate fresh speech
         rev_dir = workspace.get_revision_dir(job_id, revision_id)
@@ -147,8 +172,14 @@ async def cb_dubbing_auto_translate(call: CallbackQuery, state: FSMContext) -> N
         if seg_base.exists():
             shutil.rmtree(seg_base, ignore_errors=True)
 
+        job_storage.set_job_status(job_id, JobState.AWAITING_SEGMENT_REVIEW, stage="awaiting_segment_review")
         await render_segment_review_page(call, job_id, revision_id, page=1, plan=plan)
+    except TranslationCancelledError:
+        return
     except Exception as e:
+        if cancelled():
+            return
+        job_storage.set_job_status(job_id, JobState.AWAITING_SEGMENT_REVIEW, stage="awaiting_segment_review")
         logger.exception(f"Failed to auto-translate segments for job {job_id}: {e}")
         await safe_edit_message(
             call,

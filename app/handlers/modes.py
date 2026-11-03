@@ -15,6 +15,7 @@ from app.ui import texts_km as texts
 from app.ui.keyboards import (
     mode_choice_keyboard,
     dubbing_review_keyboard,
+    job_in_progress_keyboard,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,7 @@ async def cb_choose_free_narration(call: CallbackQuery, state: FSMContext) -> No
 @router.callback_query(F.data.startswith("mode_dub:"))
 async def cb_choose_source_timed_dubbing(call: CallbackQuery, state: FSMContext) -> None:
     _, job_id = call.data.split(":")
-    if not await verify_callback_job(call, job_id, allowed_states=(JobState.AWAITING_TEXT, JobState.AWAITING_SETTINGS, JobState.ANALYZING_SOURCE, JobState.AWAITING_SEGMENT_REVIEW)):
+    if not await verify_callback_job(call, job_id, allowed_states=(JobState.AWAITING_TEXT, JobState.AWAITING_SETTINGS, JobState.AWAITING_SEGMENT_REVIEW)):
         return
 
     job = job_storage.get_job(job_id)
@@ -57,8 +58,18 @@ async def cb_choose_source_timed_dubbing(call: CallbackQuery, state: FSMContext)
     await call.answer("⏳ កំពុងវិភាគសំឡេង...")
 
     from app.services.source_asr import transcribe_source
-    from app.services.segment_translation import translate_segments
+    from app.services.segment_translation import translate_segments, TranslationCancelledError
     from app.storage.dubbing import load_source_segments
+
+    def cancelled():
+        current = job_storage.get_job(job_id)
+        return not current or current.status == JobState.CANCELLED
+
+    async def translation_progress(elapsed):
+        await safe_edit_message(
+            call, texts.DUBBING_TRANSLATING + f"\n⏱ រង់ចាំ {elapsed} វិនាទី។ អាចចុចបោះបង់បាន។",
+            reply_markup=job_in_progress_keyboard(job_id),
+        )
 
     try:
         source_segments = load_source_segments(job_id)
@@ -72,13 +83,22 @@ async def cb_choose_source_timed_dubbing(call: CallbackQuery, state: FSMContext)
                 save_source_segments(job_id, source_segments)
 
         # Step 2: Translate segments
+        if cancelled():
+            return
         job_storage.set_job_status(job_id, JobState.TRANSLATING_SEGMENTS, stage="translating_segments")
-        await safe_edit_message(call, texts.DUBBING_TRANSLATING)
+        await safe_edit_message(call, texts.DUBBING_TRANSLATING, reply_markup=job_in_progress_keyboard(job_id))
 
         translated_segments = await translate_segments(
             segments=source_segments,
             provider=config.translation_provider,
+            cancel_check=cancelled,
+            on_progress=translation_progress,
         )
+
+        if cancelled():
+            return
+        if any(t.status == "needs_review" for t in translated_segments):
+            await call.message.answer("⚠️ ការបកប្រែ AI មិនទាន់បានបញ្ចប់គ្រប់ឃ្លាទេ។ អ្នកអាចសាកល្បងបកប្រែម្ដងទៀត ឬកែឃ្លាដោយដៃនៅផ្ទាំងពិនិត្យ។")
 
         # Step 3: Build DubbingPlan & Initial Revision
         plan = DubbingPlan(
@@ -126,7 +146,11 @@ async def cb_choose_source_timed_dubbing(call: CallbackQuery, state: FSMContext)
             from app.handlers.dubbing import render_segment_review_page
             await render_segment_review_page(call, job_id, rev.revision_id, page=1, plan=plan)
 
+    except TranslationCancelledError:
+        return
     except Exception as e:
+        if cancelled():
+            return
         logger.exception(f"Source-timed dubbing setup failed for job {job_id}: {e}")
         job_storage.set_job_status(job_id, JobState.AWAITING_TEXT)
         clean_err = str(e).replace("_", " ").replace("*", " ").replace("`", "'")[:200]
