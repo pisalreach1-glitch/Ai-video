@@ -162,41 +162,51 @@ async def _translate_single_batch_gemini(
             api_key=api_key,
             http_options=types.HttpOptions(timeout=GEMINI_HTTP_TIMEOUT_MS, retry_options=types.HttpRetryOptions(attempts=1)),
         )
-        preferred = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-        candidate_models = [preferred, "gemini-2.5-flash", "gemini-3-flash-preview", "gemini-flash-latest"]
+        preferred = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
+        candidate_models = [preferred, "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-flash-latest"]
         seen = set()
         models_to_try = [m for m in candidate_models if not (m in seen or seen.add(m))]
 
         last_err = None
         async with client.aio as async_client:
-            for model_name in models_to_try:
-                if cancel_check and cancel_check():
-                    raise TranslationCancelledError("Translation cancelled.")
-                try:
-                    logger.info("Translating %s segments using %s", len(segments), model_name)
-                    res = await async_client.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            temperature=0.2,
-                            response_mime_type="application/json",
-                            response_schema=BatchSchema,
+            for attempt in range(1, 4):
+                for model_name in models_to_try:
+                    if cancel_check and cancel_check():
+                        raise TranslationCancelledError("Translation cancelled.")
+                    try:
+                        logger.info(
+                            "Translating %s segments using %s (attempt %s/3)",
+                            len(segments), model_name, attempt
                         )
-                    )
-                    return (res.text or "").strip(), getattr(res, "parsed", None)
-                except Exception as e:
-                    err_msg = str(e)
-                    is_transient = any(
-                        kw in err_msg for kw in (
-                            "429", "RESOURCE_EXHAUSTED", "500", "502", "503", "UNAVAILABLE",
-                            "504", "DEADLINE_EXCEEDED", "timeout", "timed out", "ServerError", "ClientError",
+                        res = await async_client.models.generate_content(
+                            model=model_name,
+                            contents=prompt,
+                            config=types.GenerateContentConfig(
+                                temperature=0.2,
+                                response_mime_type="application/json",
+                                response_schema=BatchSchema,
+                            )
                         )
-                    )
-                    if is_transient:
-                        logger.warning(f"Model {model_name} failed ({type(e).__name__}: {e}). Trying next fallback model...")
-                        last_err = e
-                        continue
-                    raise e
+                        return (res.text or "").strip(), getattr(res, "parsed", None)
+                    except Exception as e:
+                        err_msg = str(e)
+                        is_transient = any(
+                            kw in err_msg for kw in (
+                                "429", "RESOURCE_EXHAUSTED", "500", "502", "503", "UNAVAILABLE",
+                                "504", "DEADLINE_EXCEEDED", "timeout", "timed out", "ServerError", "ClientError",
+                            )
+                        )
+                        if is_transient:
+                            logger.warning(f"Model {model_name} failed ({type(e).__name__}: {e}). Trying next fallback model...")
+                            last_err = e
+                            if any(k in err_msg for k in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED")):
+                                await asyncio.sleep(2.0)
+                            continue
+                        raise e
+                if attempt < 3:
+                    logger.warning("All candidate models failed in attempt %s. Retrying in 3s...", attempt)
+                    await asyncio.sleep(3.0)
+
         raise last_err or RuntimeError("All candidate Gemini models failed.")
 
     if cancel_check and cancel_check():
