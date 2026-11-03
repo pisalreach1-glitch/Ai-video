@@ -92,6 +92,7 @@ async def render_video(
     mode: str = "free_narration",
     crf: str = "22",
     preset: str = "fast",
+    max_height: int | None = None,
 ) -> Path:
     """
     Renders video using FFmpeg with proper aspect ratio, framing, audio mix, and subtitles.
@@ -119,6 +120,7 @@ async def render_video(
         is_preview=is_preview,
         preview_duration=preview_duration,
         mode=mode,
+        max_height=max_height,
     )
 
     a_filter, a_map = build_audio_filter(

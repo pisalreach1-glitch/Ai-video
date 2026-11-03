@@ -201,6 +201,7 @@ async def render_full_preview_video(
     on_pid: Callable[[int], None] | None = None,
     crf: str = "28",
     preset: str = "veryfast",
+    max_height: int | None = 480,
 ) -> Path:
     """
     Renders a fast-encoding preview of the entire video timeline at preview resolution.
@@ -220,6 +221,7 @@ async def render_full_preview_video(
         mode="source_timed",
         crf=crf,
         preset=preset,
+        max_height=max_height,
     )
 
 def _rebase_ass_file(src_ass: Path, dest_ass: Path, start_sec: float, dur_sec: float) -> None:

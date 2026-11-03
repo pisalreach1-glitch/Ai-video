@@ -103,6 +103,7 @@ def build_video_filter(
     is_preview: bool = False,
     preview_duration: float = 5.0,
     mode: str = "free_narration",
+    max_height: int | None = None,
 ) -> tuple[str, int, int]:
     """
     Construct FFmpeg video filtergraph covering:
@@ -179,6 +180,12 @@ def build_video_filter(
             escaped_ass = escape_ffmpeg_filter_path(ass_path_obj)
             fonts_dir = escape_ffmpeg_filter_path(config.khmer_font_path.parent)
             filters.append(f"subtitles=filename='{escaped_ass}':fontsdir='{fonts_dir}'")
+
+    # 6. Preview resolution downscale (e.g. 480p) for fast mobile previews
+    if max_height and max_height > 0 and out_h > max_height:
+        filters.append(f"scale=-2:{max_height}")
+        out_w = int(round((out_w * max_height / out_h) / 2) * 2)
+        out_h = max_height
 
     filter_str = ",".join(filters)
     return filter_str, out_w, out_h

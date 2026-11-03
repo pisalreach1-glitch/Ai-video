@@ -402,7 +402,11 @@ async def cb_speaker_mode_multi(call: CallbackQuery, state: FSMContext) -> None:
         available_voice_ids=set(available_ids),
         require_unscored_review=config.speaker_require_unscored_review,
     )
-    plan.review_issues.extend(assign_issues)
+    seen_issue_ids = {i.issue_id for i in plan.review_issues}
+    for iss in assign_issues:
+        if iss.issue_id not in seen_issue_ids:
+            plan.review_issues.append(iss)
+            seen_issue_ids.add(iss.issue_id)
 
     save_dubbing_plan(job_id, rev_id, plan)
 
@@ -1218,20 +1222,27 @@ async def cb_speaker_full_preview(call: CallbackQuery) -> None:
         file_size_mb = full_preview_path.stat().st_size / (1024 * 1024)
         logger.info(f"Full preview generated: {full_preview_path} ({file_size_mb:.2f} MB)")
         try:
+            sent = False
+            # Attempt 1: Standard Bot API if file is within limits
             if file_size_mb <= 49.0:
-                video_input = FSInputFile(str(full_preview_path), filename="preview_full.mp4")
-                await call.message.reply_video(
-                    video=video_input,
-                    caption=(
-                        "🎬 **Full Timeline Video Preview (ពិនិត្យវីដេអូពេញលេញ)៖**\n\n"
-                        "• បានតម្រឹមសំឡេង AI គ្រប់តួអង្គតាមពេលវេលាដើម\n"
-                        "• មិនមានបញ្ហាដែលប្រព័ន្ធបានរកឃើញ។ សូមពិនិត្យ Preview មុនបញ្ជាក់。"
-                    ),
-                    supports_streaming=True,
-                    request_timeout=300,
-                )
-            else:
-                sent = False
+                try:
+                    video_input = FSInputFile(str(full_preview_path), filename="preview_full.mp4")
+                    await call.message.reply_video(
+                        video=video_input,
+                        caption=(
+                            "🎬 **Full Timeline Video Preview (ពិនិត្យវីដេអូពេញលេញ)៖**\n\n"
+                            "• បានតម្រឹមសំឡេង AI គ្រប់តួអង្គតាមពេលវេលាដើម\n"
+                            "• មិនមានបញ្ហាដែលប្រព័ន្ធបានរកឃើញ។ សូមពិនិត្យ Preview មុនបញ្ជាក់。"
+                        ),
+                        supports_streaming=True,
+                        request_timeout=120,
+                    )
+                    sent = True
+                except Exception as api_err:
+                    logger.warning(f"Standard Bot API preview upload failed or timed out: {api_err}")
+
+            # Attempt 2: Pyrogram MTProto upload for large files or as fallback
+            if not sent:
                 try:
                     from app.services.tg_downloader import get_pyrogram_client
                     pyro = await get_pyrogram_client()
@@ -1250,20 +1261,22 @@ async def cb_speaker_full_preview(call: CallbackQuery) -> None:
                 except Exception as pe:
                     logger.warning(f"Pyrogram preview upload failed: {pe}")
 
-                if not sent and timeline_wav.exists():
-                    audio_input = FSInputFile(str(timeline_wav), filename="preview_audio.wav")
-                    await call.message.reply_audio(
-                        audio=audio_input,
-                        caption=(
-                            f"🎬 **Timeline Audio Preview (សំឡេងពេញលេញ)៖**\n\n"
-                            f"⚠️ វីដេអូ Preview មានទំហំធំ ({file_size_mb:.1f} MB) លើសពីដែនកំណត់ 50 MB របស់ Telegram Bot API។\n"
-                            f"លោកអ្នកអាចស្ដាប់សំឡេងតម្រឹមនេះបាន ឬចុចបញ្ជាក់ (Approve) ដើម្បី Render វីដេអូផ្លូវការបានភ្លាមៗ。"
-                        ),
-                    )
+            # Attempt 3: Audio-only fallback if video uploads fail
+            if not sent and timeline_wav.exists():
+                audio_input = FSInputFile(str(timeline_wav), filename="preview_audio.wav")
+                await call.message.reply_audio(
+                    audio=audio_input,
+                    caption=(
+                        f"🎬 **Timeline Audio Preview (សំឡេងពេញលេញ)៖**\n\n"
+                        f"⚠️ វីដេអូ Preview មិនអាចបញ្ជូនបានភ្លាមៗដោយសារបញ្ហា Network។\n"
+                        f"លោកអ្នកអាចស្ដាប់សំឡេងតម្រឹមនេះបាន ឬចុចបញ្ជាក់ (Approve) ដើម្បី Render វីដេអូផ្លូវការបានភ្លាមៗ。"
+                    ),
+                )
+                sent = True
         except Exception as upload_err:
-            logger.warning(f"Failed to upload full preview video to user: {upload_err}")
+            logger.warning(f"Failed to upload full preview to user: {upload_err}")
             await call.message.answer(
-                "⚠️ ការផ្ញើ file វីដេអូ Preview ទៅកាន់ Telegram បានផុតកំណត់ម៉ោង (Network Timeout) ដោយសារទំហំ file ធំ។ "
+                "⚠️ ការផ្ញើ file វីដេអូ Preview ទៅកាន់ Telegram បានផុតកំណត់ម៉ោង (Network Timeout)។ "
                 "ប៉ុន្តែការរៀបចំសំឡេងបានចប់សព្វគ្រប់ហើយ។ លោកអ្នកអាចចុចបញ្ជាក់ខាងក្រោមដើម្បី Render ចុងក្រោយបាន។"
             )
 
