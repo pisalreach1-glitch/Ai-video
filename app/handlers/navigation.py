@@ -123,6 +123,25 @@ async def _resume_single_job(call: CallbackQuery, state: FSMContext, job) -> Non
             prefer_new_for_media=True,
         )
 
+    elif status == JobState.AWAITING_SEGMENT_REVIEW:
+        from app.storage.dubbing import load_dubbing_plan
+        plan = load_dubbing_plan(job_id, rev_id)
+        if plan and plan.speaker_mode == "multi":
+            from app.handlers.speakers import render_speaker_card
+            await state.set_state(WizardStep.dubbing_review)
+            await render_speaker_card(
+                call=call,
+                job_id=job_id,
+                revision_id=rev_id,
+                user_id=call.from_user.id,
+                speaker_index=0,
+                plan=plan,
+            )
+        else:
+            from app.handlers.dubbing import render_segment_review_page
+            await state.set_state(WizardStep.dubbing_review)
+            await render_segment_review_page(call, job_id, rev_id, page=1, plan=plan)
+
     elif status == JobState.AWAITING_APPROVAL:
         await state.set_state(WizardStep.preview_review)
         await safe_edit_message(
