@@ -1,6 +1,7 @@
 """Orchestrator for per-utterance TTS synthesis, caching, and duration fitting."""
 from __future__ import annotations
 import hashlib
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -41,6 +42,16 @@ async def synthesize_and_fit_plan(
     tempo fitting (fit_clip_to_slot), builds absolute placements, and validates sync.
     In multi-speaker mode, resolves the chosen voice for each segment individually.
     """
+    from app.services import openvoice_service
+    use_openvoice = openvoice_service.enabled()
+    source_video = None
+    if use_openvoice:
+        from app.storage.jobs import job_storage
+        job = job_storage.get_job(job_id)
+        if job and job.source_path and Path(job.source_path).is_file():
+            source_video = Path(job.source_path)
+        else:
+            use_openvoice = False
     plan.clips.clear()
     plan.placements.clear()
     # Retain non-synthesis issues instead of accumulating duplicates
@@ -61,7 +72,9 @@ async def synthesize_and_fit_plan(
         sample_rate=config.dub_sample_rate,
     )
     plan.sample_rate = policy.sample_rate
+    pause_extensions = plan.sync_policy_metadata.get("pause_extensions_ms", {})
     plan.sync_policy_metadata = {
+        "pause_extensions_ms": pause_extensions,
         "max_tempo": policy.max_tempo,
         "start_tolerance_ms": policy.start_tolerance_ms,
         "end_tolerance_ms": policy.end_tolerance_ms,
@@ -74,7 +87,7 @@ async def synthesize_and_fit_plan(
         plan.source_duration_ms = max(s.end_ms for s in plan.segments)
 
     try:
-        slots = plan_speech_slots(plan.segments, plan.source_duration_ms, policy)
+        slots = plan_speech_slots(plan.segments, plan.source_duration_ms, policy, pause_extensions)
     except SyncPlanningError as spe:
         logger.warning(f"Sync planning error for job {job_id}: {spe}")
         plan.issues.append(DubbingIssue(
@@ -238,15 +251,32 @@ async def synthesize_and_fit_plan(
         if cancel_check and cancel_check():
             raise asyncio.CancelledError("Synthesis cancelled.")
 
+        # Retain clean Edge speech separately; never convert an already converted file.
+        edge_wav = seg_dir / "edge_voice.wav" if use_openvoice else raw_wav
+        engine_marker = seg_dir / "audio_engine.txt"
+        engine_identity = "openvoice_v2" if use_openvoice else "edge-tts"
+        if engine_marker.exists() and engine_marker.read_text(encoding="utf-8") != engine_identity:
+            raw_wav.unlink(missing_ok=True)
+        if not can_reuse_audio and use_openvoice:
+            edge_wav.unlink(missing_ok=True)
+
         # Decode MP3 to standardized 48kHz 16-bit PCM stereo WAV
-        if not raw_wav.exists() or raw_wav.stat().st_size == 0:
+        if not edge_wav.exists() or edge_wav.stat().st_size == 0:
             await decode_mp3_to_wav(
                 mp3_path=raw_mp3,
-                wav_path=raw_wav,
+                wav_path=edge_wav,
                 sample_rate=policy.sample_rate,
                 channels=2,
                 trim_silence=True,
             )
+
+        if use_openvoice:
+            ref_start, ref_end = openvoice_service.reference_window(plan, source)
+            await openvoice_service.convert_segment(
+                edge_wav, source_video, ref_start, ref_end, raw_wav,
+                cancel_check=cancel_check,
+            )
+        engine_marker.write_text(engine_identity, encoding="utf-8")
 
         clip = DubClip(
             segment_id=sid,

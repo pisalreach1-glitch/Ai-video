@@ -15,6 +15,7 @@ from app.services.downloader import (
 )
 from app.services.media import probe_media
 from app.jobs.worker import worker_pool
+from app.services.progress import live_progress, progress_text, stage_label
 from app.ui import texts_km as texts
 from app.handlers.common import safe_edit_message
 from app.ui.keyboards import (
@@ -89,16 +90,23 @@ async def handle_url_input(message: Message, state: FSMContext) -> None:
     def cancel_check() -> bool:
         return worker_pool.is_cancelled(job_id)
 
+    async def update_progress(elapsed):
+        await status_msg.edit_text(
+            progress_text(stage_label("downloading"), elapsed),
+            reply_markup=link_download_keyboard(job_id),
+        )
+
     try:
         job_storage.set_job_status(job_id, JobState.DOWNLOADING)
-        await download_media(
-            url=url,
-            destination_path=dest_path,
-            max_mb=config.max_media_mb,
-            max_seconds=config.max_video_seconds,
-            timeout_seconds=config.download_timeout_seconds,
-            cancel_check=cancel_check,
-        )
+        async with live_progress(update_progress, cancelled=cancel_check):
+            await download_media(
+                url=url,
+                destination_path=dest_path,
+                max_mb=config.max_media_mb,
+                max_seconds=config.max_video_seconds,
+                timeout_seconds=config.download_timeout_seconds,
+                cancel_check=cancel_check,
+            )
 
         if cancel_check():
             await status_msg.edit_text(texts.JOB_CANCELLED)
@@ -120,11 +128,21 @@ async def handle_url_input(message: Message, state: FSMContext) -> None:
 
     except DownloadLimitError as e:
         logger.warning(f"Download limit error for URL {url}: {e}")
-        await status_msg.edit_text(f"❌ {e}", reply_markup=link_failure_keyboard())
+        err_str = str(e)
+        display_msg = err_str if err_str.startswith(("❌", "⚠️")) else f"❌ {err_str}"
+        await status_msg.edit_text(display_msg, reply_markup=link_failure_keyboard())
 
     except Exception as e:
         logger.exception(f"Download failed for URL {url}: {e}")
+        err_msg = str(e)
+        if any(kw in err_msg.lower() for kw in ("timed out", "timeout", "read timed out", "transporterror")):
+            friendly_err = (
+                "⚠️ ការតភ្ជាប់ទៅកាន់ Server របស់វីដេអូបានផុតកំណត់ម៉ោង (Network Read Timeout)។ "
+                "សូមព្យាយាមផ្ញើលីងម្តងទៀត។"
+            )
+        else:
+            friendly_err = err_msg
         await status_msg.edit_text(
-            texts.LINK_DOWNLOAD_FAILED.format(error=str(e)),
+            texts.LINK_DOWNLOAD_FAILED.format(error=friendly_err),
             reply_markup=link_failure_keyboard(),
         )

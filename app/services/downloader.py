@@ -211,6 +211,15 @@ def is_douyin_url(url: str) -> bool:
     except Exception:
         return False
 
+def is_bilibili_url(url: str) -> bool:
+    """Check if URL belongs to Bilibili (bilibili.com, b23.tv, etc.)."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or "").lower()
+        return any(host == d or host.endswith("." + d) for d in ("bilibili.com", "b23.tv", "bilivideo.com", "hdslb.com"))
+    except Exception:
+        return False
+
 def extract_douyin_aweme_id(url: str) -> str | None:
     """Extract numeric aweme ID from Douyin URL paths and queries."""
     patterns = [
@@ -543,7 +552,11 @@ def download_with_ytdlp(
         "outtmpl": temp_template,
         "noplaylist": True,
         "max_filesize": max_bytes,
-        "socket_timeout": timeout_seconds,
+        "socket_timeout": min(30, timeout_seconds),
+        "retries": 10,
+        "fragment_retries": 10,
+        "file_access_retries": 3,
+        "extractor_retries": 5,
         "quiet": True,
         "no_warnings": True,
         "extract_flat": False,
@@ -559,78 +572,110 @@ def download_with_ytdlp(
     if cookiefile and cookiefile.exists():
         ydl_opts["cookiefile"] = str(cookiefile)
 
-    # For Douyin, specify browser headers
+    # For Douyin and Bilibili, specify browser headers
     if is_douyin_url(url):
         ydl_opts["http_headers"] = {
             "Referer": "https://www.douyin.com/",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         }
+    elif is_bilibili_url(url):
+        ydl_opts["http_headers"] = {
+            "Referer": "https://www.bilibili.com/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            if cancel_check and cancel_check():
-                raise DownloadLimitError("Download cancelled before start.")
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                if cancel_check and cancel_check():
+                    raise DownloadLimitError("Download cancelled before start.")
 
-            info = ydl.extract_info(url, download=False)
-            if not info:
-                raise DownloadLimitError("Could not retrieve media info from URL.")
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    raise DownloadLimitError("Could not retrieve media info from URL.")
 
-            # Validate all media format URLs discovered by the extractor before downloading
-            media_urls = []
-            if "url" in info and isinstance(info["url"], str):
-                media_urls.append(info["url"])
-            for fmt in info.get("formats", []):
-                if isinstance(fmt, dict):
-                    if "url" in fmt and isinstance(fmt["url"], str):
-                        media_urls.append(fmt["url"])
-                    if "manifest_url" in fmt and isinstance(fmt["manifest_url"], str):
-                        media_urls.append(fmt["manifest_url"])
+                # Validate all media format URLs discovered by the extractor before downloading
+                media_urls = []
+                if "url" in info and isinstance(info["url"], str):
+                    media_urls.append(info["url"])
+                for fmt in info.get("formats", []):
+                    if isinstance(fmt, dict):
+                        if "url" in fmt and isinstance(fmt["url"], str):
+                            media_urls.append(fmt["url"])
+                        if "manifest_url" in fmt and isinstance(fmt["manifest_url"], str):
+                            media_urls.append(fmt["manifest_url"])
 
-            for m_url in media_urls:
-                if m_url.startswith(("http://", "https://")):
-                    validate_public_url(m_url)
+                for m_url in media_urls:
+                    if m_url.startswith(("http://", "https://")):
+                        validate_public_url(m_url)
 
-            duration = info.get("duration")
-            if duration and duration > max_seconds:
-                raise DownloadLimitError(f"Video duration ({duration:.1f}s) exceeds limit of {max_seconds}s.")
+                duration = info.get("duration")
+                if duration and duration > max_seconds:
+                    raise DownloadLimitError(f"Video duration ({duration:.1f}s) exceeds limit of {max_seconds}s.")
 
-            if cancel_check and cancel_check():
-                raise DownloadLimitError("Download cancelled by user.")
+                if cancel_check and cancel_check():
+                    raise DownloadLimitError("Download cancelled by user.")
 
-            ydl.download([url])
+                ydl.download([url])
 
-            if cancel_check and cancel_check():
-                raise DownloadLimitError("Download cancelled by user.")
+                if cancel_check and cancel_check():
+                    raise DownloadLimitError("Download cancelled by user.")
 
-            # Find the output file
-            candidates = list(dest.parent.glob(f"temp_{dest.stem}.*"))
-            if not candidates:
-                raise DownloadLimitError("yt-dlp completed but output file was not found.")
+                # Find the output file
+                candidates = list(dest.parent.glob(f"temp_{dest.stem}.*"))
+                if not candidates:
+                    raise DownloadLimitError("yt-dlp completed but output file was not found.")
 
-            chosen = candidates[0]
-            if chosen.stat().st_size > max_bytes:
-                chosen.unlink(missing_ok=True)
-                raise DownloadLimitError("Downloaded file exceeded maximum size.")
+                chosen = candidates[0]
+                if chosen.stat().st_size > max_bytes:
+                    chosen.unlink(missing_ok=True)
+                    raise DownloadLimitError("Downloaded file exceeded maximum size.")
 
-            if dest.exists():
-                dest.unlink()
-            chosen.rename(dest)
-            return dest
+                if dest.exists():
+                    dest.unlink()
+                chosen.rename(dest)
+                return dest
 
-    except Exception as e:
-        # Clean up any partials
-        for p in dest.parent.glob(f"temp_{dest.stem}.*"):
-            try:
-                p.unlink()
-            except Exception:
-                pass
-        err_msg = str(e)
-        if is_douyin_url(url) and any(kw in err_msg for kw in ("Fresh cookies", "403", "Forbidden", "Sign algorithm")):
-            raise DownloadLimitError(
-                "⚠️ វីដេអូ Douyin នេះស្ថិតក្នុង Channel ការពារ ឬរកប្រាក់ចំណូល (Protected/Monetized Channel) ដែលត្រូវការ Cookie ពី Browser ស្រស់ៗ។\n\n"
-                "💡 ដំណោះស្រាយ៖ សូមដាក់ File `cookies.txt` (Douyin Netscape cookies) នៅក្នុង Folder របស់ Bot ឬកំណត់ `DOUYIN_COOKIE` នៅក្នុង file `.env`។"
-            ) from e
-        raise e
+        except Exception as e:
+            # Clean up any partials
+            for p in dest.parent.glob(f"temp_{dest.stem}.*"):
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+
+            if isinstance(e, (DownloadLimitError, DownloadSecurityError)):
+                raise e
+
+            err_msg = str(e)
+            is_transient = any(kw in err_msg.lower() for kw in (
+                "timed out", "timeout", "read timed out", "connection reset",
+                "remotedisconnected", "temporary failure", "connection refused",
+                "transporterror", "connection closed", "broken pipe"
+            ))
+
+            if attempt < max_attempts and is_transient and not (cancel_check and cancel_check()):
+                backoff = attempt * 2.0
+                logger.warning(
+                    f"Download attempt {attempt}/{max_attempts} failed with transient error: {e}. Retrying in {backoff}s..."
+                )
+                time.sleep(backoff)
+                continue
+
+            if is_douyin_url(url) and any(kw in err_msg for kw in ("Fresh cookies", "403", "Forbidden", "Sign algorithm")):
+                raise DownloadLimitError(
+                    "⚠️ វីដេអូ Douyin នេះស្ថិតក្នុង Channel ការពារ ឬរកប្រាក់ចំណូល (Protected/Monetized Channel) ដែលត្រូវការ Cookie ពី Browser ស្រស់ៗ។\n\n"
+                    "💡 ដំណោះស្រាយ៖ សូមដាក់ File `cookies.txt` (Douyin Netscape cookies) នៅក្នុង Folder របស់ Bot ឬកំណត់ `DOUYIN_COOKIE` នៅក្នុង file `.env`។"
+                ) from e
+
+            if is_transient:
+                raise DownloadLimitError(
+                    "⚠️ ការតភ្ជាប់ទៅកាន់ Server របស់វីដេអូបានផុតកំណត់ម៉ោង (Network Read Timeout) ដោយសារល្បឿនអ៊ីនធឺណិត ឬ Server ឆ្លើយតបយឺត។\n\n"
+                    "💡 សូមសាកល្បងផ្ញើលីងវីដេអូនេះម្តងទៀត។"
+                ) from e
+
+            raise e
 
 async def download_media(
     url: str,

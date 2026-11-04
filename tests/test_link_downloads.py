@@ -295,3 +295,57 @@ async def test_try_download_douyin_direct_resolver(tmp_path, monkeypatch):
     assert dest.read_bytes() == b"fake_mp4_bytes"
 
 
+def test_is_bilibili_url():
+    """Verify Bilibili domain detection for standard, short, and CDN URLs."""
+    from app.services.downloader import is_bilibili_url
+    assert is_bilibili_url("https://www.bilibili.com/video/BV1QugVe6E7E") is True
+    assert is_bilibili_url("https://b23.tv/7YCyhAN") is True
+    assert is_bilibili_url("http://b23.tv/Z1icqGs") is True
+    assert is_bilibili_url("https://m.bilibili.com/video/BV1") is True
+    assert is_bilibili_url("https://youtube.com/watch?v=123") is False
+    assert is_bilibili_url("https://douyin.com/video/123") is False
+
+
+def test_ytdlp_transient_timeout_retry(tmp_path, monkeypatch):
+    """Verify download_with_ytdlp retries on transient network errors before succeeding."""
+    from app.services.downloader import download_with_ytdlp
+    import socket
+    monkeypatch.setattr(
+        "socket.getaddrinfo",
+        lambda host, port, *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))],
+    )
+
+    dest = tmp_path / "target.mp4"
+    attempts = 0
+
+    class MockYDLDone:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def extract_info(self, url, download=False):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise Exception("HTTPSConnectionPool(host='www.bilibili.com', port=443): Read timed out.")
+            return {"url": "https://example.com/v.mp4", "duration": 10}
+        def download(self, urls):
+            temp_file = tmp_path / f"temp_{dest.stem}.mp4"
+            temp_file.write_bytes(b"downloaded_ok")
+
+    monkeypatch.setattr("yt_dlp.YoutubeDL", MockYDLDone)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    res = download_with_ytdlp(
+        url="https://b23.tv/7YCyhAN",
+        destination_path=dest,
+        max_bytes=10 * 1024 * 1024,
+    )
+    assert res.exists()
+    assert res.read_bytes() == b"downloaded_ok"
+    assert attempts == 2
+
+
+
