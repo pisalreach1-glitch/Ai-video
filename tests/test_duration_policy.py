@@ -7,7 +7,7 @@ from app.services.render import render_video
 def test_video_filter_longer_source():
     """When video is longer than audio, it is simply trimmed to audio duration."""
     info = MediaInfo(width=1080, height=1920, duration=10.0, has_audio=True)
-    settings = VoiceSettings(duration_policy="extend")
+    settings = VoiceSettings(source_audio_mode="mute", duration_policy="extend")
     v_filter, _, _ = build_video_filter(info, settings, target_duration=5.0)
 
     assert "trim=duration=5.0" in v_filter
@@ -17,7 +17,7 @@ def test_video_filter_longer_source():
 def test_video_filter_shorter_source_extend():
     """When video is shorter than audio, extend policy adds tpad."""
     info = MediaInfo(width=1080, height=1920, duration=2.0, has_audio=True)
-    settings = VoiceSettings(duration_policy="extend")
+    settings = VoiceSettings(source_audio_mode="mute", duration_policy="extend")
     v_filter, _, _ = build_video_filter(info, settings, target_duration=4.5)
 
     assert "tpad=stop_mode=clone" in v_filter
@@ -26,7 +26,7 @@ def test_video_filter_shorter_source_extend():
 def test_video_filter_shorter_source_loop():
     """When video is shorter than audio, loop policy adds loop filter."""
     info = MediaInfo(width=1080, height=1920, duration=2.0, has_audio=True)
-    settings = VoiceSettings(duration_policy="loop")
+    settings = VoiceSettings(source_audio_mode="mute", duration_policy="loop")
     v_filter, _, _ = build_video_filter(info, settings, target_duration=5.0)
 
     assert "loop=loop=-1" in v_filter
@@ -39,7 +39,7 @@ async def test_short_video_extend_render(session_media_dir, tmp_path):
     audio = session_media_dir["audio_sample"] # 3.0s
     out = tmp_path / "extended.mp4"
 
-    settings = VoiceSettings(duration_policy="extend")
+    settings = VoiceSettings(source_audio_mode="mute", duration_policy="extend")
     await render_video(
         source_path=src,
         voice_audio_path=audio,

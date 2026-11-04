@@ -73,7 +73,10 @@ async def fit_clip_to_slot(
         return clip
     factor = raw.frames / target_frames
     if factor > policy.max_tempo:
-        return clip
+        # Use only the existing end tolerance, never the next speaker's time.
+        if raw.frames / policy.max_tempo > slot.hard_frames(policy.sample_rate):
+            return clip
+        factor = policy.max_tempo
     output_dir.mkdir(parents=True, exist_ok=True)
     # Hash the ID so source-derived identifiers cannot become path components.
     safe_id = hashlib.sha256(slot.segment_id.encode("utf-8")).hexdigest()[:16]

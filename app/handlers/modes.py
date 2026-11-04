@@ -10,7 +10,8 @@ from app.domain.dubbing import DubbingPlan
 from app.storage.jobs import job_storage
 from app.storage.preferences import preferences_storage
 from app.storage.dubbing import save_dubbing_plan, save_source_segments
-from app.handlers.common import safe_edit_message, verify_callback_job
+from app.handlers.common import safe_edit_message, verify_callback_job, answer_callback_safely
+from app.services.progress import live_progress, progress_text, stage_label
 from app.ui import texts_km as texts
 from app.ui.keyboards import (
     mode_choice_keyboard,
@@ -54,9 +55,6 @@ async def cb_choose_source_timed_dubbing(call: CallbackQuery, state: FSMContext)
 
     video_duration = job.source_media_info.duration if job.source_media_info else 0.0
 
-    await safe_edit_message(call, texts.DUBBING_ANALYZING)
-    await call.answer("⏳ កំពុងវិភាគសំឡេង...")
-
     from app.services.source_asr import transcribe_source
     from app.services.segment_translation import translate_segments, TranslationCancelledError
     from app.storage.dubbing import load_source_segments
@@ -71,14 +69,24 @@ async def cb_choose_source_timed_dubbing(call: CallbackQuery, state: FSMContext)
             reply_markup=job_in_progress_keyboard(job_id),
         )
 
+    async def analysis_progress(elapsed):
+        await safe_edit_message(
+            call, progress_text(stage_label("analyzing_source"), elapsed),
+            reply_markup=job_in_progress_keyboard(job_id),
+        )
+
     try:
+        await answer_callback_safely(call, "⏳ កំពុងវិភាគសំឡេង...")
         source_segments = load_source_segments(job_id)
         if not source_segments:
-            source_segments = await transcribe_source(
-                video_path=Path(job.source_path),
-                video_duration=video_duration,
-                job_id=job_id,
-            )
+            await safe_edit_message(call, texts.DUBBING_ANALYZING, reply_markup=job_in_progress_keyboard(job_id))
+            async with live_progress(analysis_progress, cancelled=cancelled):
+                source_segments = await transcribe_source(
+                    video_path=Path(job.source_path),
+                    video_duration=video_duration,
+                    job_id=job_id,
+                    cancel_check=cancelled,
+                )
             if source_segments:
                 save_source_segments(job_id, source_segments)
 
@@ -91,6 +99,7 @@ async def cb_choose_source_timed_dubbing(call: CallbackQuery, state: FSMContext)
         translated_segments = await translate_segments(
             segments=source_segments,
             provider=config.translation_provider,
+            video_path=Path(job.source_path),
             cancel_check=cancelled,
             on_progress=translation_progress,
         )
@@ -132,18 +141,18 @@ async def cb_choose_source_timed_dubbing(call: CallbackQuery, state: FSMContext)
         )
         await state.set_state(WizardStep.dubbing_review)
 
-        if config.enable_multi_speaker_dubbing:
-            from app.ui.speaker_keyboards import speaker_mode_choice_keyboard
-            await safe_edit_message(
-                call,
-                "👥 **ជ្រើសរើសរបៀបសំឡេងសម្រាប់វីដេអូនេះ៖**\n\n"
-                "• 🎙 **សំឡេងមួយ** — ប្រើសំឡេង AI តែមួយសម្រាប់វីដេអូទាំងមូល\n"
-                "• 👥 **សំឡេងតាមអ្នកនិយាយ** — បែងចែកអ្នកនិយាយ (Speaker A/B) និងជ្រើសសំឡេង AI ដាច់ដោយឡែកសម្រាប់តួអង្គម្នាក់ៗ",
-                reply_markup=speaker_mode_choice_keyboard(job_id),
-            )
+        from app.handlers.dubbing import render_segment_review_page, execute_dubbing_proceed
+        translations = {t.segment_id: t for t in translated_segments}
+        complete = bool(source_segments) and all(
+            (t := translations.get(segment.segment_id)) is not None
+            and t.status == "ready" and t.translated_text.strip()
+            and any("\u1780" <= char <= "\u17ff" for char in t.translated_text)
+            for segment in source_segments
+        )
+        if complete:
+            # Continue on the same immutable callback; it was acknowledged before ASR.
+            await execute_dubbing_proceed(call, job_id, rev.revision_id, state=state, acknowledge=False)
         else:
-            # Present paginated segment review (3 segments per page)
-            from app.handlers.dubbing import render_segment_review_page
             await render_segment_review_page(call, job_id, rev.revision_id, page=1, plan=plan)
 
     except TranslationCancelledError:
@@ -159,3 +168,12 @@ async def cb_choose_source_timed_dubbing(call: CallbackQuery, state: FSMContext)
             f"❌ ការវិភាគសំឡេងវីដេអូបរាជ័យ៖ {clean_err}\n\nសូមជ្រើសរើសរបៀប Narration ថ្មីវិញ៖",
             reply_markup=mode_choice_keyboard(job_id, has_caption=False),
         )
+
+@router.callback_query(F.data.startswith("mode_more:"))
+async def cb_mode_more(call: CallbackQuery, state: FSMContext) -> None:
+    _, job_id = call.data.split(":")
+    if not await verify_callback_job(call, job_id, allowed_states=(JobState.AWAITING_TEXT, JobState.AWAITING_SETTINGS)):
+        return
+    data = await state.get_data()
+    await call.answer()
+    await safe_edit_message(call, "⚙️ កែបន្ថែម\n\nអ្នកអាចសរសេរអត្ថបទផ្ទាល់ខ្លួន ឬជ្រើសការបកប្រែធម្មតា។", reply_markup=mode_choice_keyboard(job_id, has_caption=bool(data.get("caption_text")), advanced=True))

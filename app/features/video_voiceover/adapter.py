@@ -1,6 +1,7 @@
 import logging
 from typing import Any
 from aiogram.types import FSInputFile
+from aiogram.exceptions import TelegramNetworkError
 from app.config import config
 from app.domain.features import QueueTask
 from app.domain.states import JobState
@@ -50,9 +51,14 @@ class VideoVoiceoverPipeline:
         def on_pid(pid: int) -> None:
             worker_pool.register_pid(job_id, pid)
 
+        def on_stage(stage):
+            status = JobState.PREVIEW_RENDERING if task_type == "preview" else JobState.RENDERING
+            job_storage.set_job_status(job_id, status, stage=stage)
+
         mode = revision.mode or (job.mode if job else "free_narration")
         cancel_check = lambda: worker_pool.is_cancelled(job_id)
 
+        preview_ready = False
         try:
             if task_type == "preview":
                 job_storage.set_job_status(job_id, JobState.PREVIEW_RENDERING)
@@ -77,6 +83,7 @@ class VideoVoiceoverPipeline:
                     timeout_seconds=float(config.subprocess_timeout_seconds),
                     cancel_check=cancel_check,
                     on_pid=on_pid,
+                    on_stage=on_stage,
                     mode=mode,
                     start_time=preview_start_time,
                 )
@@ -86,6 +93,7 @@ class VideoVoiceoverPipeline:
                     return
 
                 job_storage.update_revision(job_id, revision_id, preview_path=str(preview_dest))
+                preview_ready = True
                 job_storage.set_job_status(job_id, JobState.AWAITING_APPROVAL)
                 job_storage.complete_task(job_id, "completed")
 
@@ -97,6 +105,7 @@ class VideoVoiceoverPipeline:
                         caption=texts.PREVIEW_REVIEW_PROMPT,
                         reply_markup=video_preview_review_keyboard(job_id, revision_id),
                         supports_streaming=True,
+                        request_timeout=180,
                     )
 
             elif task_type == "final":
@@ -104,10 +113,20 @@ class VideoVoiceoverPipeline:
                     from app.storage.dubbing import load_dubbing_plan
                     from app.services.content_coverage import validate_content_coverage
                     plan = load_dubbing_plan(job_id, revision_id)
-                    if not plan or plan.has_blocking_issues:
-                        logger.error(f"Cannot render final for job {job_id}: plan has unresolved blocking issues.")
-                        job_storage.set_job_status(job_id, JobState.FAILED, error_message="Unresolved blocking issues exist.")
+                    if not plan:
+                        raise ValueError("Dubbing plan is missing; please generate a new preview")
+                    if plan.has_blocking_issues:
+                        logger.warning("Final render needs timing resolution for job %s", job_id)
+                        job_storage.set_job_status(job_id, JobState.AWAITING_FIT_RESOLUTION, stage="awaiting_fit_resolution")
                         job_storage.complete_task(job_id, "failed")
+                        if bot:
+                            from app.services.job_messages import update
+                            from app.ui.keyboards import dubbing_fit_resolution_keyboard
+                            overlong = [clip for clip in plan.clips if clip.status == "too_long"]
+                            segment_id = overlong[0].segment_id if overlong else plan.segments[0].segment_id
+                            await update(bot, chat_id, job_id,
+                                "⚠️ មិនទាន់អាចបង្កើតវីដេអូពេញបានទេ៖ ឃ្លាខ្លះនិយាយវែងជាងពេលដើម។ សូមឱ្យ AI សាកកែឃ្លា ឬកែអត្ថបទ។",
+                                dubbing_fit_resolution_keyboard(job_id, revision_id, segment_id, max(1, len(overlong))))
                         return
 
                     coverage_issues = validate_content_coverage(plan, settings, require_clips_and_placements=True)
@@ -140,6 +159,7 @@ class VideoVoiceoverPipeline:
                     timeout_seconds=float(config.subprocess_timeout_seconds),
                     cancel_check=cancel_check,
                     on_pid=on_pid,
+                    on_stage=on_stage,
                     mode=mode,
                 )
 
@@ -154,6 +174,14 @@ class VideoVoiceoverPipeline:
                 rev_updated = job_storage.get_revision(job_id, revision_id)
                 if bot and rev_updated:
                     await deliver_final_video(bot, chat_id, job_id, rev_updated)
+
+        except TelegramNetworkError:
+            if task_type == "preview" and preview_ready:
+                # Telegram may have delivered the preview before its response timed out.
+                # Preserve the valid preview and approval state; never resend blindly.
+                logger.warning("Preview delivery response timed out for job %s; approval remains available.", job_id)
+                return
+            raise
 
         except RenderCancelledError:
             logger.info(f"Job {job_id} was successfully cancelled.")

@@ -25,7 +25,7 @@ Final MP4 + SRT Subtitles Delivery
 - **🎙️ Natural Khmer Voices:** Real Edge-TTS `km-KH-SreymomNeural` (female) and `km-KH-PisethNeural` (male) with rate adjustments (-15%, 1.0x, +15%).
 - **📝 High-Precision Subtitles:** Sentence/phrase timing events, styled ASS subtitles burned with bundled `Khmer OS Battambang` font, plus downloadable `.srt` files.
 - **📐 Aspect Ratio & Framing:** Original ratio, vertical 9:16 (TikTok/Reel), or square 1:1, using fit (letterbox pad) or fill (center crop).
-- **🔊 Smart Audio Mix:** Mute original audio or low-mix (duck source to 15%), gracefully handles source videos without audio.
+- **🔊 Smart Audio Mix:** Default: separate original vocals and mix the remaining music/SFX with Khmer narration. Mute and 15% original-audio mix remain selectable. Separation can leave vocal residue or affect some effects; review the preview.
 - **🧊 Duration Flexibility:** When source video is shorter than narration, choose between extending the final frame (freeze), looping, or shortening text.
 - **🔒 Security & Resilience:** SSRF protection on public video downloads, bounded worker queue, atomic queue claims, process-tree termination on cancellation or timeout, and delivery retry without re-rendering.
 
@@ -190,3 +190,36 @@ Ai-video/
 
   tests/                      # 13 automated test suites (all passing)
 ```
+
+
+## Background music and SFX
+
+The default `background` audio mode uses UVR to remove original vocals and retain the non-vocal background. Preview excerpts and final exports reuse the same cached full-length stem. Failed separation stops rendering instead of silently restoring original speech. Existing saved audio choices remain unchanged.
+
+Install the isolated engine on Windows:
+
+```powershell
+python -m venv --system-site-packages .venv-audio
+.\.venv-audio\Scripts\python.exe -m pip install -r requirements-audio.txt
+```
+
+The UVR model downloads to `models/audio_separator` on first use. Set `BACKGROUND_SEPARATOR_PYTHON` to use a different environment. The first preview takes longer while separating; subsequent renders reuse the result. Select the SFX/music option in audio settings when revising an older video created with mute enabled.
+
+
+## Simple navigation
+
+The home screen focuses on Khmer video translation, unfinished jobs (when present), and video history. Personal settings and help are under Advanced. The normal translation path uses one Khmer voice and opens a plain Khmer text review; speaker separation, source timing, alignment reports, and translation retries remain in the review screen's Advanced menu. Preview styling is also under Advanced.
+
+
+Overlong translated phrases are rephrased and resynthesized automatically for at most two attempts. Full translations are retained, and proposals that obviously drop numbers or Khmer negation are rejected. Unresolved phrases still require review; these checks do not guarantee semantic equivalence.
+
+
+## OpenVoice V2: local character-tone conversion
+
+Run `powershell -ExecutionPolicy Bypass -File scripts/setup_openvoice.ps1` from the project folder, then use `python scripts/check_openvoice.py --source-wav Khmer.wav --reference-video source.mp4 --start-ms 0 --end-ms 5000 --output converted.wav` to validate real output. Enable `OPENVOICE_ENABLED=true` in the local `.env` only after a successful check. The optional `OPENVOICE_PYTHON` variable overrides the isolated interpreter.
+
+The timed-dubbing pipeline generates clean Khmer speech with the existing TTS engine, converts its tone using a source utterance, and then fits the complete converted audio to the original window. Where existing speaker assignments are available, it selects the longest reference for that same speaker (up to 8 seconds). Otherwise each source utterance supplies its own reference, without guessing gender or age. Overlapping voices, short references, and background noise can reduce matching quality. This does not implement automatic diarization or guarantee perfect voice identity. Free narration without source-timed segments continues using the selected base voice.
+
+The conversion model remains loaded between requests and cached outputs are keyed by the Khmer speech, source video, reference interval, and model files. Cancellation stops the worker. Failed or duration-changing conversions stop processing instead of claiming that unchanged base speech was converted. Music/SFX separation and final mixing continue through the existing background-audio path.
+
+Official OpenVoice code is vendored under `engines/openvoice_vendor`, with the upstream commit, retained MIT license, and compatibility change recorded there. Downloaded model weights and Python environments are ignored by Git. The model is local and has no per-minute OpenVoice API charge; base TTS and translation retain their own service requirements.

@@ -23,10 +23,11 @@ def test_main_menu_keyboard_layout():
     texts = [btn.text for row in kb_no_active.inline_keyboard for btn in row]
     callbacks = [btn.callback_data for row in kb_no_active.inline_keyboard for btn in row]
 
-    assert "🎬 បញ្ចូលសំឡេងទៅវីដេអូ" in texts
-    assert "🖼️ រូបថតនិយាយតាម Voice" in texts
+    assert "🌐 បកប្រែវីដេអូជាខ្មែរ" in texts
+    assert "⚙️ កែបន្ថែម" in texts
     assert "nav_new_video" in callbacks
-    assert "nav_talking_photo" in callbacks
+    assert "nav_talking_photo" not in callbacks
+    assert "nav_more" in callbacks
     assert "nav_resume" not in callbacks
 
     kb_active = main_menu_keyboard(has_active_job=True)

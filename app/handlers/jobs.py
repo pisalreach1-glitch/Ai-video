@@ -100,19 +100,10 @@ async def cb_retry_interrupted_job(call: CallbackQuery, state: FSMContext, bot: 
         await call.answer("✅ បានដាក់ក្នុងជួរ Render ឡើងវិញ!")
         return
 
-    # Case 3: Interrupted during preview rendering / queue
+    # Legacy preview interruptions now continue to the full video.
     if stage in ("interrupted:preview_rendering", "interrupted:preview_queued", "interrupted:preview_render") or (rev.audio_path and Path(rev.audio_path).exists()):
-        task_type = "preview"
-        next_status = JobState.PREVIEW_QUEUED
-        job_storage.enqueue_task(job_id, rev_id, user_id, task_type)
-        job_storage.set_job_status(job_id, next_status, stage="preview_queue")
-        await state.set_state(WizardStep.rendering_in_progress)
-        await safe_edit_message(
-            call,
-            "⏳ ការងារ Video Preview ត្រូវបានបញ្ចូលក្នុងជួរម្តងទៀត!\nសូមរង់ចាំបន្តិច...",
-            reply_markup=job_in_progress_keyboard(job_id),
-        )
-        await call.answer("✅ បានដាក់ក្នុងជួរ Preview ឡើងវិញ!")
+        from app.handlers.previews import _start_full_video
+        await _start_full_video(call, job_id, rev_id, state)
         return
 
     # Case 4: Interrupted during TTS generation (no audio generated yet)

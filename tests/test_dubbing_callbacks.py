@@ -84,8 +84,12 @@ async def test_dubbing_auto_translate_callback(temp_job_storage, monkeypatch, pr
     )
     save_dubbing_plan(job.job_id, 1, plan)
 
+    from app.domain.models import MediaInfo
+    temp_job_storage.set_job_source(job.job_id, "source.mp4", MediaInfo(640, 360, 2, True))
+
     # Mock translate_segments to return Khmer text
-    async def mock_translate(segs, provider=None, cancel_check=None, on_progress=None):
+    async def mock_translate(segs, provider=None, cancel_check=None, on_progress=None, video_path=None):
+        assert str(video_path) == "source.mp4"
         if provider_failed:
             return [TranslatedSegment(segment_id="s001", translated_text="", translation_provider="manual", status="needs_review")]
         return [TranslatedSegment(segment_id="s001", translated_text="សួស្តីពិភពលោក", translation_provider="gemini", status="ready")]

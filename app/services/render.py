@@ -21,6 +21,8 @@ def build_audio_filter(
     source_has_audio: bool,
     source_audio_mode: str,
     target_duration: float,
+    background_input: str = "[0:a]",
+    start_time: float = 0.0,
 ) -> tuple[str, list[str]]:
     """
     Construct audio filtergraph:
@@ -28,7 +30,18 @@ def build_audio_filter(
     - If mode is low_mix and source has audio: mix narration as master [1:a] with ducked,
       silence-padded source audio [0:a] so narration is NEVER truncated by short source audio.
     """
-    if source_audio_mode == "low_mix" and source_has_audio:
+    if source_audio_mode in ("low_mix", "background") and source_has_audio:
+        if source_audio_mode == "background":
+            if background_input == "[0:a]":
+                raise ValueError("Separated background input is required; original speech cannot be remixed")
+            trim = f"atrim=start={start_time:.3f}:duration={target_duration:.3f}"
+            return (
+                f"[1:a]volume=1.0,{trim},asetpts=PTS-STARTPTS[anarr]; "
+                f"{background_input}volume=1.0,{trim},apad,asetpts=PTS-STARTPTS[asrc]; "
+                f"[anarr][asrc]amix=inputs=2:duration=first:normalize=0:dropout_transition=0,"
+                f"atrim=0:{target_duration:.3f},alimiter=limit=0.95:level=false:latency=1[aout]",
+                ["[aout]"],
+            )
         # Narration is the master input [1:a], duck source to 15% and pad with silence
         filter_str = (
             f"[1:a]volume=1.0,atrim=0:{target_duration:.3f},asetpts=PTS-STARTPTS[anarr]; "
@@ -93,6 +106,7 @@ async def render_video(
     crf: str = "22",
     preset: str = "fast",
     max_height: int | None = None,
+    on_stage: Callable[[str], None] | None = None,
 ) -> Path:
     """
     Renders video using FFmpeg with proper aspect ratio, framing, audio mix, and subtitles.
@@ -109,6 +123,14 @@ async def render_video(
         raise RenderError(f"Voice audio not found: {voice_audio_path}")
 
     source_info = probe_media(src)
+    background = None
+    if settings.source_audio_mode == "background" and source_info.has_audio:
+        from app.services.background_audio import prepare_background
+        if on_stage:
+            on_stage("separating_background")
+        background = await prepare_background(src, cancel_check=cancel_check, on_pid=on_pid)
+        if on_stage:
+            on_stage("preview_rendering" if is_preview else "rendering")
     eff_duration = min(preview_duration, target_duration) if is_preview else target_duration
 
     # Build filters
@@ -127,6 +149,7 @@ async def render_video(
         source_has_audio=source_info.has_audio,
         source_audio_mode=settings.source_audio_mode,
         target_duration=eff_duration,
+        background_input="[2:a]" if background else "[0:a]",
     )
 
     full_filter = f"[0:v]{v_filter}[vout]; {a_filter}"
@@ -136,6 +159,7 @@ async def render_video(
         "-y",
         "-i", str(src),
         "-i", str(voice),
+        *(["-i", str(background)] if background else []),
         "-filter_complex", full_filter,
         "-map", "[vout]",
         "-map", a_map[0],

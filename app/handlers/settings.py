@@ -27,7 +27,7 @@ def _render_settings_summary(rev) -> str:
     sub_status = "បើក" if s.subtitles_enabled else "បិទ"
     sub_col = "ស" if s.subtitle_color == "white" else "លឿង"
     sub_pos = "ក្រោម" if s.subtitle_position == "bottom" else "កណ្តាល"
-    aud_mode = "ជំនួសដោយ AI" if s.source_audio_mode == "mute" else "រក្សាតិចៗ (15%)"
+    aud_mode = opt.AUDIO_MODES.get(s.source_audio_mode, {}).get("label", "បិទសំឡេងដើម")
     fmt_mode = "Pad" if s.framing_mode == "fit" else "Crop"
 
     return texts.SETTINGS_SUMMARY.format(
@@ -48,7 +48,7 @@ async def cb_settings_customize(call: CallbackQuery, state: FSMContext) -> None:
     job_id = data.get("job_id")
     rev_id = data.get("revision_id")
 
-    if not job_id:
+    if call.data.startswith("cfg_customize:") or not job_id:
         parts = call.data.split(":")
         if len(parts) >= 3:
             job_id = parts[1]
@@ -62,6 +62,7 @@ async def cb_settings_customize(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer(texts.INVALID_ACTION, show_alert=True)
         return
 
+    await state.update_data(job_id=job_id, revision_id=rev.revision_id)
     text = _render_settings_summary(rev)
     await safe_edit_message(call, text, reply_markup=settings_menu_keyboard(job_id, rev.revision_id))
     await call.answer()
@@ -316,6 +317,9 @@ async def cb_set_audio(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("aud_pick:"))
 async def cb_aud_pick(call: CallbackQuery, state: FSMContext) -> None:
     _, mode, job_id, rev_id_str = call.data.split(":")
+    if mode not in opt.AUDIO_MODES:
+        await call.answer(texts.INVALID_ACTION, show_alert=True)
+        return
     if not await verify_callback_job(call, job_id, expected_rev=int(rev_id_str)):
         return
 
@@ -332,7 +336,17 @@ async def cb_aud_pick(call: CallbackQuery, state: FSMContext) -> None:
         audio_path=rev.audio_path,
         audio_duration=rev.audio_duration,
         subtitles_srt=rev.subtitles_srt,
+        mode=rev.mode,
     )
+    job_storage.update_revision(job_id, new_rev.revision_id, subtitles_ass=rev.subtitles_ass)
+    if rev.mode == "source_timed":
+        from app.storage.dubbing import load_dubbing_plan, save_dubbing_plan
+        plan = load_dubbing_plan(job_id, rev.revision_id)
+        if plan:
+            plan.full_preview_approved_digest = ""
+            plan_path = save_dubbing_plan(job_id, new_rev.revision_id, plan)
+            job_storage.update_revision(job_id, new_rev.revision_id, dubbing_plan_path=str(plan_path))
+            job_storage.set_job_dubbing_revision(job_id, new_rev.revision_id)
     await state.update_data(revision_id=new_rev.revision_id)
 
     await safe_edit_reply_markup(

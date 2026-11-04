@@ -199,3 +199,71 @@ def test_cumulative_positions_and_corrupt_placement_are_detected(tmp_path):
     assert validate_sync(plan, slots, policy) == []
     plan.placements[1].sample_count = 1
     assert "placement_audio_mismatch" in {i.issue_type for i in validate_sync(plan, slots, policy)}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("next_start,expected", [(2000, "ready"), (640, "too_long")])
+async def test_small_overrun_uses_allowed_tolerance_without_crossing_speaker(tmp_path, next_start, expected):
+    from app.services.audio_fit import apply_atempo
+    policy = SyncPolicy()
+    segments = [SourceSegment("s001", 0, 640, "Hello"), SourceSegment("s002", next_start, next_start + 500, "Next")]
+    slot = plan_speech_slots(segments, 4000, policy)["s001"]
+    original = pcm(tmp_path / "short_window.wav", 790)
+    fitted = await fit_clip_to_slot(clip(original), slot, policy, tmp_path / "fit", apply_atempo)
+    assert fitted.status == expected
+    assert fitted.tempo_factor <= policy.max_tempo
+    assert inspect_pcm(original, policy).duration_ms == 790
+    if expected == "ready":
+        assert inspect_pcm(fitted.fitted_audio_path, policy).frames <= slot.hard_frames(policy.sample_rate)
+
+
+@pytest.mark.asyncio
+async def test_adaptive_pause_fits_full_phrase_and_assembles_same_duration(tmp_path):
+    from app.services.auto_fit import use_adjacent_pause
+    from app.services.timeline import assemble_timeline_pcm
+    policy=SyncPolicy()
+    segments=[SourceSegment("s001",0,640,"Name"),SourceSegment("s002",2120,3000,"Next")]
+    plan=plan_for(segments)
+    first=clip(pcm(tmp_path/"name.wav",1360))
+    first.status="too_long"
+    first.raw_duration_ms=1360
+    second=clip(pcm(tmp_path/"next.wav",500),"s002")
+    second.status="ready"
+    second.fitted_audio_path=second.raw_audio_path
+    plan.clips=[first,second]
+    assert use_adjacent_pause(plan)
+    assert plan.sync_policy_metadata["pause_extensions_ms"]=={"s001":720}
+    slots=plan_speech_slots(segments,8000,policy,plan.sync_policy_metadata["pause_extensions_ms"])
+    writer=AsyncMock()
+    plan.clips[0]=await fit_clip_to_slot(first,slots["s001"],policy,tmp_path/"fit",writer)
+    assert first.status=="ready"
+    assert first.tempo_factor==1
+    writer.assert_not_awaited()
+    plan.placements=build_absolute_placements(plan,slots,policy)
+    assert validate_sync(plan,slots,policy)==[]
+    assert plan.placements[0].timeline_start_ms==0
+    assert plan.placements[1].timeline_start_ms==2120
+    assemble_timeline_pcm(plan,tmp_path/"timeline.wav")
+    assert inspect_pcm(tmp_path/"timeline.wav",policy).duration_ms==8000
+
+
+@pytest.mark.parametrize("next_start,expected_extension",[(640,0),(740,20),(3000,1000)])
+def test_adaptive_pause_is_bounded_and_never_moves_next_speaker(tmp_path,next_start,expected_extension):
+    from app.services.auto_fit import use_adjacent_pause
+    plan=plan_for([SourceSegment("s001",0,640,"A"),SourceSegment("s002",next_start,next_start+500,"B")])
+    item=clip(pcm(tmp_path/"long.wav",3000))
+    item.raw_duration_ms=3000
+    item.status="too_long"
+    plan.clips=[item]
+    use_adjacent_pause(plan)
+    extensions=plan.sync_policy_metadata.get("pause_extensions_ms",{})
+    assert extensions.get("s001",0)==expected_extension
+    slot=plan_speech_slots(plan.segments,8000,SyncPolicy(),extensions)["s001"]
+    assert slot.start_ms==0
+    assert slot.hard_end_ms<=next_start
+
+
+@pytest.mark.parametrize("extensions",[{"s001":1001},{"s001":-1},{"unknown":10}])
+def test_invalid_adaptive_pause_metadata_is_rejected(extensions):
+    with pytest.raises(SyncPlanningError,match="invalid_pause_extension"):
+        plan_speech_slots([SourceSegment("s001",0,640,"A")],8000,SyncPolicy(),extensions)

@@ -88,6 +88,8 @@ async def main() -> None:
         from app.services.tg_downloader import stop_pyrogram_client
         await stop_pyrogram_client()
         await worker_pool.stop()
+        from app.services.openvoice_service import close_worker
+        await close_worker()
         await bot.session.close()
         logger.info("Bot stopped cleanly.")
 

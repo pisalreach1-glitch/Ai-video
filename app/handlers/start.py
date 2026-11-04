@@ -9,8 +9,10 @@ from app.storage.sessions import session_storage
 from app.storage.preferences import preferences_storage
 from app.handlers.common import safe_edit_message
 from app.ui import texts_km as texts
+from app.ui import options as opt
 from app.ui.keyboards import (
     main_menu_keyboard,
+    more_menu_keyboard,
     source_choice_keyboard,
     settings_menu_keyboard,
 )
@@ -99,8 +101,13 @@ async def cb_my_settings(call: CallbackQuery) -> None:
         f"• 🎙️ សំឡេង៖ {'ស្រី (Sreymom)' if 'Sreymom' in prefs.voice else 'ប្រុស (Piseth)'}\n"
         f"• ⚡ ល្បឿន៖ {prefs.speed}\n"
         f"• 📝 Subtitle៖ {'បើក' if prefs.subtitles_enabled else 'បិទ'} ({prefs.subtitle_color}, {prefs.subtitle_position})\n"
-        f"• 🔊 សំឡេងដើម៖ {'រក្សាតិចៗ (15%)' if prefs.source_audio_mode == 'low_mix' else 'ជំនួសដោយ AI'}\n"
+        f"• 🔊 សំឡេងដើម៖ {opt.AUDIO_MODES.get(prefs.source_audio_mode, {}).get('label', 'បិទសំឡេងដើម')}\n"
         f"• 📐 ទំហំ៖ {prefs.aspect_ratio} ({prefs.framing_mode})\n\n"
         "💡 អ្នកអាចកែប្រែការកំណត់ទាំងនេះនៅពេលបង្កើតវីដេអូនីមួយៗ។"
     )
     await safe_edit_message(call, summary, reply_markup=main_menu_keyboard(has_active_job=False), prefer_new_for_media=True)
+
+@router.callback_query(F.data == "nav_more")
+async def cb_more_menu(call: CallbackQuery) -> None:
+    await call.answer()
+    await safe_edit_message(call, "⚙️ កែបន្ថែម\n\nកែការកំណត់នៅពេលអ្នកត្រូវការ ឬត្រឡប់ទៅបកប្រែវីដេអូ។", reply_markup=more_menu_keyboard(), prefer_new_for_media=True)

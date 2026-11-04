@@ -486,6 +486,15 @@ class JobStorage:
              JobState.ANALYZING_SOURCE.value, JobState.TRANSLATING_SEGMENTS.value),
         )
         count += recovered_translation.rowcount
+        recovered_dubbing = conn.execute(
+            """UPDATE jobs SET status = ?, stage = ?, error_message = ?, updated_at = ?
+               WHERE status IN (?, ?, ?)""",
+            (JobState.AWAITING_SEGMENT_REVIEW.value, "dubbing_interrupted",
+             "Dubbing interrupted by restart; saved plan and source retained.", now,
+             JobState.GENERATING_SEGMENTS.value, JobState.CHECKING_FIT.value,
+             JobState.ASSEMBLING_TIMELINE.value),
+        )
+        count += recovered_dubbing.rowcount
         return count
 
     # ---------------- History & Active Jobs ----------------
@@ -497,6 +506,7 @@ class JobStorage:
     ) -> list[Job]:
         conn = self.db.get_connection()
         active_statuses = (
+            JobState.AWAITING_SEGMENT_REVIEW.value,
             JobState.AWAITING_SOURCE.value,
             JobState.AWAITING_URL.value,
             JobState.DOWNLOADING.value,

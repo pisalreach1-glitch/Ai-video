@@ -11,7 +11,7 @@ async def test_vertical_9_16_fit_pad(session_media_dir, tmp_path):
     audio = session_media_dir["audio_sample"]
     out = tmp_path / "vertical_fit.mp4"
 
-    settings = VoiceSettings(aspect_ratio="9:16", framing_mode="fit")
+    settings = VoiceSettings(source_audio_mode="mute", aspect_ratio="9:16", framing_mode="fit")
     await render_video(
         source_path=src,
         voice_audio_path=audio,
@@ -32,7 +32,7 @@ async def test_square_1_1_fill_crop(session_media_dir, tmp_path):
     audio = session_media_dir["audio_sample"]
     out = tmp_path / "square_crop.mp4"
 
-    settings = VoiceSettings(aspect_ratio="1:1", framing_mode="fill")
+    settings = VoiceSettings(source_audio_mode="mute", aspect_ratio="1:1", framing_mode="fill")
     await render_video(
         source_path=src,
         voice_audio_path=audio,
@@ -53,7 +53,7 @@ async def test_original_ratio_preserved(session_media_dir, tmp_path):
     audio = session_media_dir["audio_sample"]
     out = tmp_path / "original_ratio.mp4"
 
-    settings = VoiceSettings(aspect_ratio="original")
+    settings = VoiceSettings(source_audio_mode="mute", aspect_ratio="original")
     await render_video(
         source_path=src,
         voice_audio_path=audio,

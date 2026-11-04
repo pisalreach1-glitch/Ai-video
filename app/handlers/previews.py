@@ -11,6 +11,7 @@ from app.storage.jobs import job_storage
 from app.storage.workspaces import workspace
 from app.jobs.worker import worker_pool
 from app.services.tts import generate_narration, TTSTimingError
+from app.services.progress import live_progress, progress_text, stage_label
 from app.services.subtitles import generate_srt, generate_ass, parse_srt_events
 from app.handlers.common import safe_edit_message, safe_edit_reply_markup, verify_callback_job
 from app.ui import texts_km as texts
@@ -141,15 +142,22 @@ async def cb_proceed_to_audio(call: CallbackQuery, state: FSMContext, bot: Bot) 
         return
 
     rev_id = rev.revision_id
-    await safe_edit_message(call, texts.AUDIO_GENERATING)
+    await safe_edit_message(call, texts.AUDIO_GENERATING, reply_markup=job_in_progress_keyboard(job_id))
 
     cancel_check = lambda: worker_pool.is_cancelled(job_id)
 
+    async def update_progress(elapsed):
+        await safe_edit_message(
+            call, progress_text(stage_label("generating_audio"), elapsed),
+            reply_markup=job_in_progress_keyboard(job_id),
+        )
+
     try:
         job_storage.set_job_status(job_id, JobState.GENERATING_AUDIO)
-        audio_path, a_dur, _, _ = await _generate_audio_and_subtitles(
-            job_id, rev_id, cancel_check=cancel_check
-        )
+        async with live_progress(update_progress, cancelled=cancel_check):
+            audio_path, a_dur, _, _ = await _generate_audio_and_subtitles(
+                job_id, rev_id, cancel_check=cancel_check
+            )
 
         if cancel_check():
             await safe_edit_message(call, texts.JOB_CANCELLED)
@@ -225,8 +233,8 @@ async def cb_duration_policy_picked(call: CallbackQuery, state: FSMContext) -> N
     job_storage.update_revision(job_id, rev_id, settings=rev.settings)
     job_storage.set_duration_policy(job_id, policy)
 
-    # Proceed directly to video preview render
-    await _start_video_preview(call, job_id, rev_id, state)
+    # Proceed directly to the full video render
+    await _start_full_video(call, job_id, rev_id, state)
 
 @router.callback_query(F.data.startswith("aud_next:"))
 async def cb_audio_next_to_preview(call: CallbackQuery, state: FSMContext) -> None:
@@ -240,9 +248,9 @@ async def cb_audio_next_to_preview(call: CallbackQuery, state: FSMContext) -> No
     ):
         return
 
-    await _start_video_preview(call, job_id, rev_id, state)
+    await _start_full_video(call, job_id, rev_id, state)
 
-async def _start_video_preview(call: CallbackQuery, job_id: str, rev_id: int, state: FSMContext) -> None:
+async def _start_full_video(call: CallbackQuery, job_id: str, rev_id: int, state: FSMContext | None, acknowledge: bool = True) -> None:
     job = job_storage.get_job(job_id)
     if not job:
         await call.answer(texts.INVALID_ACTION, show_alert=True)
@@ -258,20 +266,22 @@ async def _start_video_preview(call: CallbackQuery, job_id: str, rev_id: int, st
         await call.answer(texts.ALREADY_PROCESSING, show_alert=True)
         return
 
-    # Check queue
-    job_storage.set_job_status(job_id, JobState.PREVIEW_QUEUED)
-    enqueued = job_storage.enqueue_task(job_id, rev_id, call.from_user.id, "preview")
-    if not enqueued:
-        await call.answer(texts.SYSTEM_BUSY, show_alert=True)
+    if job.status in (JobState.CANCELLED, JobState.COMPLETED):
         return
-
-    await state.set_state(WizardStep.preview_review)
-    await safe_edit_message(
-        call,
-        texts.PREVIEW_GENERATING,
-        reply_markup=job_in_progress_keyboard(job_id),
-    )
-    await call.answer()
+    if acknowledge:
+        await call.answer()
+    await safe_edit_message(call, texts.JOB_RENDERING, reply_markup=job_in_progress_keyboard(job_id))
+    current = job_storage.get_job(job_id)
+    if not current or current.status == JobState.CANCELLED:
+        return
+    if state:
+        await state.set_state(WizardStep.rendering_in_progress)
+    job_storage.set_job_status(job_id, JobState.FINAL_QUEUED, stage="final_queued")
+    enqueued = job_storage.enqueue_task(job_id, rev_id, call.from_user.id, "final")
+    if not enqueued:
+        job_storage.set_job_status(job_id, JobState.FAILED, stage="queue_failed", error_message="Could not queue full video")
+        await safe_edit_message(call, texts.SYSTEM_BUSY)
+        return
 
 @router.callback_query(F.data.startswith("apprv_final:"))
 async def cb_approve_final(call: CallbackQuery, state: FSMContext) -> None:
@@ -307,6 +317,8 @@ async def cb_approve_final(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer(texts.ALREADY_PROCESSING, show_alert=True)
         return
 
+    # Publish the progress target before the worker can finish or reject the task.
+    await safe_edit_message(call, texts.JOB_RENDERING, reply_markup=job_in_progress_keyboard(job_id))
     job_storage.set_job_status(job_id, JobState.FINAL_QUEUED)
     enqueued = job_storage.enqueue_task(job_id, rev_id, call.from_user.id, "final")
     if not enqueued:
@@ -315,12 +327,6 @@ async def cb_approve_final(call: CallbackQuery, state: FSMContext) -> None:
 
     await state.set_state(WizardStep.rendering_in_progress)
 
-    # Safely remove buttons from preview video message and send new progress message
-    await safe_edit_reply_markup(call, reply_markup=None)
-    await call.message.answer(
-        texts.JOB_RENDERING,
-        reply_markup=job_in_progress_keyboard(job_id),
-    )
     await call.answer()
 
 # Edit triggers from review screens

@@ -70,6 +70,11 @@ async def _resume_single_job(call: CallbackQuery, state: FSMContext, job) -> Non
     await state.update_data(job_id=job_id, revision_id=rev_id, feature=feature)
 
     status = job.status
+    if status == JobState.AWAITING_SEGMENT_REVIEW:
+        from app.handlers.dubbing import render_segment_review_page
+        await state.set_state(WizardStep.dubbing_review)
+        await render_segment_review_page(call, job_id, rev_id, page=1)
+        return
     if status == JobState.AWAITING_SOURCE:
         await state.set_state(WizardStep.awaiting_video_source)
         await safe_edit_message(call, texts.SOURCE_PROMPT, reply_markup=source_choice_keyboard(), prefer_new_for_media=True)
@@ -141,6 +146,11 @@ async def _resume_single_job(call: CallbackQuery, state: FSMContext, job) -> Non
             from app.handlers.dubbing import render_segment_review_page
             await state.set_state(WizardStep.dubbing_review)
             await render_segment_review_page(call, job_id, rev_id, page=1, plan=plan)
+
+    elif status == JobState.AWAITING_FIT_RESOLUTION:
+        from app.handlers.dubbing import execute_dubbing_proceed
+        await state.set_state(WizardStep.dubbing_review)
+        await execute_dubbing_proceed(call, job_id, rev_id, state=state, acknowledge=False)
 
     elif status == JobState.AWAITING_APPROVAL:
         await state.set_state(WizardStep.preview_review)

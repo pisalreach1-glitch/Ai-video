@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 from typing import Callable
 from app.domain.models import VoiceSettings
-from app.services.render import render_video
+from app.services.render import render_video, build_audio_filter
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,7 @@ async def render_preview_video(
     on_pid: Callable[[int], None] | None = None,
     mode: str = "free_narration",
     start_time: float = 0.0,
+    on_stage: Callable[[str], None] | None = None,
 ) -> Path:
     """
     Renders up to 5-second video preview matching the full video's
@@ -39,6 +40,7 @@ async def render_preview_video(
             timeout_seconds=timeout_seconds,
             cancel_check=cancel_check,
             on_pid=on_pid,
+            on_stage=on_stage,
             mode=mode,
         )
 
@@ -54,6 +56,7 @@ async def render_preview_video(
         timeout_seconds=timeout_seconds,
         cancel_check=cancel_check,
         on_pid=on_pid,
+        on_stage=on_stage,
     )
 
 async def render_timed_excerpt(
@@ -67,6 +70,7 @@ async def render_timed_excerpt(
     timeout_seconds: float = 60.0,
     cancel_check: Callable[[], bool] | None = None,
     on_pid: Callable[[int], None] | None = None,
+    on_stage: Callable[[str], None] | None = None,
     variant: str = "dubbed",  # "dubbed" | "original"
 ) -> Path:
     """
@@ -145,7 +149,18 @@ async def render_timed_excerpt(
         ]
     else:
         audio = Path(assembled_audio_path)
-        if settings.source_audio_mode == "low_mix" and source_info.has_audio:
+        background = None
+        if settings.source_audio_mode == "background" and source_info.has_audio:
+            from app.services.background_audio import prepare_background
+            if on_stage:
+                on_stage("separating_background")
+            background = await prepare_background(src, cancel_check=cancel_check, on_pid=on_pid)
+            if on_stage:
+                on_stage("preview_rendering")
+            a_filter_str, _ = build_audio_filter(
+                True, "background", duration_sec, background_input="[2:a]", start_time=start_sec,
+            )
+        elif settings.source_audio_mode == "low_mix" and source_info.has_audio:
             a_filter_str = (
                 f"[1:a]atrim=start={start_sec:.3f}:duration={duration_sec:.3f},asetpts=PTS-STARTPTS[anarr]; "
                 f"[0:a]volume=0.15,atrim=start={start_sec:.3f}:duration={duration_sec:.3f},apad,asetpts=PTS-STARTPTS[asrc]; "
@@ -160,6 +175,7 @@ async def render_timed_excerpt(
             "-y",
             "-i", str(src),
             "-i", str(audio),
+            *(["-i", str(background)] if background else []),
             "-filter_complex", full_filter,
             "-map", "[vout]",
             "-map", "[aout]",

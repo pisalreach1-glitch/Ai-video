@@ -49,7 +49,7 @@ def assemble_timeline_pcm(
     slots: dict[str, SpeechSlot] = {}
     if plan.segments and plan.source_duration_ms > 0:
         try:
-            slots = plan_speech_slots(plan.segments, plan.source_duration_ms, policy)
+            slots = plan_speech_slots(plan.segments, plan.source_duration_ms, policy, plan.sync_policy_metadata.get("pause_extensions_ms", {}))
         except SyncPlanningError as spe:
             logger.warning(f"Speech slot planning in timeline assembly: {spe}")
 

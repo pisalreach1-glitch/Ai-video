@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS preferences (
     subtitles_enabled INTEGER NOT NULL DEFAULT 1,
     subtitle_color TEXT NOT NULL DEFAULT 'white',
     subtitle_position TEXT NOT NULL DEFAULT 'bottom',
-    source_audio_mode TEXT NOT NULL DEFAULT 'mute',
+    source_audio_mode TEXT NOT NULL DEFAULT 'background',
     aspect_ratio TEXT NOT NULL DEFAULT 'original',
     framing_mode TEXT NOT NULL DEFAULT 'fit',
     duration_policy TEXT NOT NULL DEFAULT 'extend',

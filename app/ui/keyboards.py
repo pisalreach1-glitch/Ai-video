@@ -3,28 +3,21 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.ui import options as opt
 
 def main_menu_keyboard(has_active_job: bool = False) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(
-            text="🎬 បញ្ចូលសំឡេងទៅវីដេអូ",
-            callback_data="nav_new_video",
-        )],
-        [InlineKeyboardButton(
-            text="🖼️ រូបថតនិយាយតាម Voice",
-            callback_data="nav_talking_photo",
-        )],
-    ]
+    rows = [[InlineKeyboardButton(text="🌐 បកប្រែវីដេអូជាខ្មែរ", callback_data="nav_new_video")]]
     if has_active_job:
-        rows.append([InlineKeyboardButton(
-            text="▶️ បន្តការងារ", callback_data="nav_resume"
-        )])
+        rows.append([InlineKeyboardButton(text="▶️ បន្តការងារ", callback_data="nav_resume")])
     rows.extend([
-        [
-            InlineKeyboardButton(text="📂 វីដេអូរបស់ខ្ញុំ", callback_data="nav_my_videos:1"),
-            InlineKeyboardButton(text="⚙️ ការកំណត់", callback_data="nav_my_settings"),
-        ],
-        [InlineKeyboardButton(text="❓ របៀបប្រើ", callback_data="nav_help")],
+        [InlineKeyboardButton(text="📂 វីដេអូរបស់ខ្ញុំ", callback_data="nav_my_videos:1")],
+        [InlineKeyboardButton(text="⚙️ កែបន្ថែម", callback_data="nav_more")],
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def more_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚙️ ការកំណត់សំឡេង និងវីដេអូ", callback_data="nav_my_settings")],
+        [InlineKeyboardButton(text="❓ របៀបប្រើ", callback_data="nav_help")],
+        [InlineKeyboardButton(text="⬅️ ត្រឡប់ក្រោយ", callback_data="nav_main")],
+    ])
 
 def active_job_picker_keyboard(active_jobs: list[Any]) -> InlineKeyboardMarkup:
     rows = []
@@ -63,10 +56,16 @@ def link_failure_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ Back", callback_data="nav_main")],
     ])
 
-def mode_choice_keyboard(job_id: str, has_caption: bool = False) -> InlineKeyboardMarkup:
+def mode_choice_keyboard(job_id: str, has_caption: bool = False, advanced: bool = False) -> InlineKeyboardMarkup:
+    if not advanced:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 ចាប់ផ្ដើមបកប្រែជាខ្មែរ", callback_data=f"mode_dub:{job_id}")],
+            [InlineKeyboardButton(text="⚙️ កែបន្ថែម", callback_data=f"mode_more:{job_id}")],
+            [InlineKeyboardButton(text="⬅️ ត្រឡប់ក្រោយ", callback_data="nav_source")],
+        ])
     rows = [
-        [InlineKeyboardButton(text="🎙️ Narration ថ្មី (Free Narration)", callback_data=f"mode_free:{job_id}")],
-        [InlineKeyboardButton(text="🌐 បកប្រែតាមពេលវីដេអូដើម (Source-Timed Dubbing)", callback_data=f"mode_dub:{job_id}")],
+        [InlineKeyboardButton(text="✍️ សរសេរអត្ថបទឱ្យ AI អាន", callback_data=f"mode_free:{job_id}")],
+        [InlineKeyboardButton(text="🌐 បកប្រែវីដេអូជាខ្មែរ", callback_data=f"mode_dub:{job_id}")],
     ]
     if has_caption:
         rows.append([InlineKeyboardButton(text="📝 ប្រើ Caption នៃវីដេអូ", callback_data="caption_use")])
@@ -82,6 +81,7 @@ def dubbing_review_keyboard(
     page: int,
     total_pages: int,
     segments_on_page: list[tuple[str, str]], # [(segment_id, label)]
+    advanced: bool = False,
 ) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="✅ ប្រើអត្ថបទបកប្រែនេះ", callback_data=f"d_proc:{job_id}:{revision_id}")],
@@ -89,8 +89,8 @@ def dubbing_review_keyboard(
 
     # Edit buttons for segments visible on current page
     edit_btns = [
-        InlineKeyboardButton(text=f"✏️ កែ {seg_id}", callback_data=f"d_ed:{job_id}:{revision_id}:{seg_id}")
-        for seg_id, _ in segments_on_page
+        InlineKeyboardButton(text=f"✏️ កែឃ្លា {label}", callback_data=f"d_ed:{job_id}:{revision_id}:{seg_id}")
+        for seg_id, label in segments_on_page
     ]
     if edit_btns:
         rows.append(edit_btns)
@@ -105,6 +105,12 @@ def dubbing_review_keyboard(
             nav_row.append(InlineKeyboardButton(text="បន្ទាប់ ▶️", callback_data=f"d_p:{job_id}:{revision_id}:{page + 1}"))
         rows.append(nav_row)
 
+    if not advanced:
+        rows.append([InlineKeyboardButton(text="⚙️ កែបន្ថែម", callback_data=f"d_more:{job_id}:{revision_id}:{page}")])
+        rows.append([InlineKeyboardButton(text="❌ បោះបង់", callback_data=f"job_cancel:{job_id}")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+    rows.append([InlineKeyboardButton(text="👥 សំឡេងតាមអ្នកនិយាយ", callback_data=f"d_spk:{job_id}:{revision_id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ ត្រឡប់ទៅអត្ថបទ", callback_data=f"d_p:{job_id}:{revision_id}:{page}")])
     rows.append([
         InlineKeyboardButton(text="🎙️ ជ្រើសសំឡេង", callback_data=f"edit_voice:{job_id}:{revision_id}"),
         InlineKeyboardButton(text="📊 មើលការតម្រឹម", callback_data=f"d_rep:{job_id}:{revision_id}"),
@@ -235,8 +241,10 @@ def subtitle_picker_keyboard(
 def audio_picker_keyboard(job_id: str, revision_id: int, current_mode: str) -> InlineKeyboardMarkup:
     mute_mark = " ✓" if current_mode == opt.AUDIO_MUTE else ""
     low_mark = " ✓" if current_mode == opt.AUDIO_LOW_MIX else ""
+    background_mark = " ✓" if current_mode == opt.AUDIO_BACKGROUND else ""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"🔇 ជំនួសដោយសំឡេង AI (Default){mute_mark}", callback_data=f"aud_pick:{opt.AUDIO_MUTE}:{job_id}:{revision_id}")],
+        [InlineKeyboardButton(text=f"🎵 រក្សា SFX និងតន្ត្រី ដកសំឡេងនិយាយ{background_mark}", callback_data=f"aud_pick:{opt.AUDIO_BACKGROUND}:{job_id}:{revision_id}")],
+        [InlineKeyboardButton(text=f"🔇 បិទសំឡេងដើមទាំងអស់{mute_mark}", callback_data=f"aud_pick:{opt.AUDIO_MUTE}:{job_id}:{revision_id}")],
         [InlineKeyboardButton(text=f"🔉 រក្សាសំឡេងដើមតិចៗ (15%){low_mark}", callback_data=f"aud_pick:{opt.AUDIO_LOW_MIX}:{job_id}:{revision_id}")],
         [InlineKeyboardButton(text="⬅️ ត្រឡប់ក្រោយ", callback_data=f"cfg_customize:{job_id}:{revision_id}")],
     ])
@@ -270,7 +278,7 @@ def format_picker_keyboard(
 
 def audio_review_keyboard(job_id: str, revision_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ បន្តទៅ Video Preview", callback_data=f"aud_next:{job_id}:{revision_id}")],
+        [InlineKeyboardButton(text="✅ បង្កើតវីដេអូពេញ", callback_data=f"aud_next:{job_id}:{revision_id}")],
         [
             InlineKeyboardButton(text="✏️ កែអត្ថបទ", callback_data=f"edit_text:{job_id}:{revision_id}"),
             InlineKeyboardButton(text="🎙️ ប្ដូរសំឡេង", callback_data=f"edit_voice:{job_id}:{revision_id}"),
@@ -291,15 +299,9 @@ def duration_choice_keyboard(job_id: str, revision_id: int) -> InlineKeyboardMar
 
 def video_preview_review_keyboard(job_id: str, revision_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ បង្កើតវីដេអូពេញ (Approve)", callback_data=f"apprv_final:{job_id}:{revision_id}")],
-        [
-            InlineKeyboardButton(text="📝 កែ Subtitle", callback_data=f"edit_sub:{job_id}:{revision_id}"),
-            InlineKeyboardButton(text="🎨 កែទំហំ/ស្ទីល", callback_data=f"edit_fmt:{job_id}:{revision_id}"),
-        ],
-        [
-            InlineKeyboardButton(text="✏️ កែអត្ថបទ", callback_data=f"edit_text:{job_id}:{revision_id}"),
-            InlineKeyboardButton(text="❌ បោះបង់", callback_data=f"job_cancel:{job_id}"),
-        ],
+        [InlineKeyboardButton(text="✅ យកវីដេអូពេញ", callback_data=f"apprv_final:{job_id}:{revision_id}")],
+        [InlineKeyboardButton(text="⚙️ កែបន្ថែម", callback_data=f"cfg_customize:{job_id}:{revision_id}")],
+        [InlineKeyboardButton(text="❌ បោះបង់", callback_data=f"job_cancel:{job_id}")],
     ])
 
 def job_in_progress_keyboard(job_id: str) -> InlineKeyboardMarkup:

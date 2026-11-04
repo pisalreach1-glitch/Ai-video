@@ -73,3 +73,8 @@ desktop.ini
 "bot video/"
 *.jpg
 *.png
+
+.venv-audio/
+
+.venv-openvoice/
+engines/OpenVoice/

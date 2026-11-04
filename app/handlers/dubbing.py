@@ -17,7 +17,8 @@ from app.storage.dubbing import (
     load_sync_report,
 )
 from app.storage.workspaces import workspace
-from app.handlers.common import safe_edit_message, verify_callback_job
+from app.handlers.common import safe_edit_message, verify_callback_job, answer_callback_safely
+from app.services.progress import live_progress, progress_text, stage_label
 from app.ui import texts_km as texts
 from app.ui.keyboards import (
     dubbing_review_keyboard,
@@ -47,6 +48,7 @@ async def render_segment_review_page(
     revision_id: int,
     page: int,
     plan: DubbingPlan | None = None,
+    advanced: bool = False,
 ) -> None:
     """Helper to display paginated segment review with edit buttons."""
     if not plan:
@@ -72,12 +74,15 @@ async def render_segment_review_page(
         start_s = s.start_ms / 1000.0
         end_s = s.end_ms / 1000.0
 
-        lines.append(
-            f"🔹 **ឃ្លា {s.segment_id}** ({start_s:.1f}s - {end_s:.1f}s | ⏱️ {dur_s:.1f}s):\n"
-            f"   • ដើម៖ _{s.source_text}_\n"
-            f"   • ខ្មែរ៖ **{trans_text}**"
-        )
-        visible_btns.append((s.segment_id, s.segment_id))
+        number = start_idx + len(lines) + 1
+        if advanced:
+            lines.append(
+                f"🔹 **ឃ្លា {number}** ({start_s:.1f}s - {end_s:.1f}s):\n"
+                f"ដើម៖ {s.source_text}\nខ្មែរ៖ {trans_text}"
+            )
+        else:
+            lines.append(f"**{number}.** {trans_text}")
+        visible_btns.append((s.segment_id, str(number)))
 
     segments_text = "\n\n".join(lines)
     video_dur = plan.source_duration_ms / 1000.0
@@ -90,6 +95,9 @@ async def render_segment_review_page(
         segments_text=segments_text,
     )
 
+    if not advanced:
+        msg_text = f"📝 **ពិនិត្យអត្ថបទខ្មែរ ({page}/{total_pages})**\n\n{segments_text}\n\nបើត្រឹមត្រូវ សូមចុចបន្តទៅវីដេអូគំរូ។"
+
     await safe_edit_message(
         call,
         msg_text,
@@ -99,6 +107,7 @@ async def render_segment_review_page(
             page=page,
             total_pages=total_pages,
             segments_on_page=visible_btns,
+            advanced=advanced,
         ),
     )
 
@@ -147,8 +156,12 @@ async def cb_dubbing_auto_translate(call: CallbackQuery, state: FSMContext) -> N
         )
 
     try:
+        source_job = job_storage.get_job(job_id)
+        if not source_job or not source_job.source_path:
+            raise ValueError("Original video is missing; please upload the video again")
         translated_segments = await translate_segments(
             source_segments, provider="gemini", cancel_check=cancelled,
+            video_path=Path(source_job.source_path),
             on_progress=translation_progress,
         )
         if cancelled():
@@ -313,6 +326,7 @@ async def execute_dubbing_proceed(
     job_id: str,
     revision_id: int,
     state: FSMContext | None = None,
+    acknowledge: bool = True,
 ) -> None:
     if not await verify_callback_job(call, job_id, expected_rev=revision_id):
         return
@@ -324,26 +338,71 @@ async def execute_dubbing_proceed(
         return
 
     job_storage.set_job_status(job_id, JobState.GENERATING_SEGMENTS, stage="generating_segments")
-    await safe_edit_message(call, texts.DUBBING_SYNTHESIZING)
-    await call.answer("🎙️ កំពុងបង្កើតសំឡេង AI...")
+    await safe_edit_message(call, texts.DUBBING_SYNTHESIZING, reply_markup=job_in_progress_keyboard(job_id))
+    if acknowledge:
+        await answer_callback_safely(call, "🎙️ កំពុងបង្កើតសំឡេង AI...")
 
     from app.services.dubbing import synthesize_and_fit_plan
     from app.services.timeline import assemble_timeline_pcm
     from app.services.subtitles import build_timeline_subtitles
 
+    def cancelled():
+        job = job_storage.get_job(job_id)
+        return not job or job.status == JobState.CANCELLED
+
+    async def update_progress(elapsed):
+        await safe_edit_message(
+            call, progress_text(stage_label("generating_segments"), elapsed),
+            reply_markup=job_in_progress_keyboard(job_id),
+        )
+
     try:
         # Step 1: Synthesize and fit clips
-        plan = await synthesize_and_fit_plan(
-            plan=plan,
-            job_id=job_id,
-            revision_id=revision_id,
-            settings=revision.settings,
-        )
+        async with live_progress(update_progress, cancelled=cancelled):
+            plan = await synthesize_and_fit_plan(
+                plan=plan,
+                job_id=job_id,
+                revision_id=revision_id,
+                settings=revision.settings,
+                cancel_check=cancelled,
+            )
+        if cancelled():
+            return
         save_dubbing_plan(job_id, revision_id, plan)
 
         if not plan.clips:
             await call.answer("⚠️ មិនមានឃ្លាណាមួយត្រូវបានបង្កើតសំឡេងឡើយ។", show_alert=True)
             return
+
+        # Resolve ordinary timing problems without asking the user to operate AI tools.
+        from app.services.auto_fit import auto_fit_overlong, use_adjacent_pause
+
+        async def resynthesize(updated):
+            return await synthesize_and_fit_plan(
+                plan=updated, job_id=job_id, revision_id=revision_id,
+                settings=revision.settings, cancel_check=cancelled,
+            )
+
+        async def notify_repair(attempt, count):
+            await safe_edit_message(
+                call, f"🤖 កំពុងកែឃ្លា {count} ឱ្យសមពេលដោយស្វ័យប្រវត្តិ (សាកល្បង {attempt}/2)…",
+                reply_markup=job_in_progress_keyboard(job_id),
+            )
+
+        # Prefer preserving the complete Khmer phrase over repeated shortening.
+        if use_adjacent_pause(plan):
+            await safe_edit_message(call, "🤖 កំពុងតម្រឹមសំឡេងដោយប្រើចន្លោះស្ងាត់ជាប់ឃ្លា…", reply_markup=job_in_progress_keyboard(job_id))
+            async with live_progress(update_progress, cancelled=cancelled):
+                plan = await resynthesize(plan)
+
+        async with live_progress(update_progress, cancelled=cancelled):
+            plan = await auto_fit_overlong(
+                plan, shorten_overlong_segments, resynthesize,
+                cancelled=cancelled, notify=notify_repair,
+            )
+        if cancelled():
+            return
+        save_dubbing_plan(job_id, revision_id, plan)
 
         # Check for blocking issues (overlong clips)
         too_long_clips = [c for c in plan.clips if c.status == "too_long"]
@@ -405,14 +464,17 @@ async def execute_dubbing_proceed(
             subtitles_ass=str(sub_ass),
         )
 
-        # Step 5: Enqueue preview render
-        job_storage.set_job_status(job_id, JobState.PREVIEW_QUEUED, stage="preview_queued")
-        user_id = call.from_user.id
-        job_storage.enqueue_task(job_id, revision_id, user_id, "preview")
+        # Render and deliver the full video without a five-second approval step.
+        from app.handlers.previews import _start_full_video
+        await _start_full_video(call, job_id, revision_id, state, acknowledge=False)
 
-        await safe_edit_message(call, texts.PREVIEW_GENERATING)
-
+    except asyncio.CancelledError:
+        if cancelled():
+            return
+        raise
     except Exception as e:
+        if cancelled():
+            return
         logger.exception(f"Dubbing orchestration failed for job {job_id}: {e}")
         job_storage.set_job_status(job_id, JobState.FAILED, error_message=str(e))
         await safe_edit_message(call, f"❌ បរាជ័យក្នុងការតម្រឹមសំឡេង៖ {e}")
@@ -472,7 +534,7 @@ async def cb_dubbing_shorten_single_segment(call: CallbackQuery, state: FSMConte
         await call.answer("មិនអាចរកឃើញឃ្លានេះឡើយ។", show_alert=True)
         return
 
-    target_s = max(s_seg.duration_ms / 1000.0, 1.0) if s_seg else 1.0
+    target_s = max(s_seg.duration_ms / 1000.0, 0.001)
 
     try:
         shortened = await shorten_single_segment_khmer(
@@ -492,7 +554,7 @@ async def cb_dubbing_shorten_single_segment(call: CallbackQuery, state: FSMConte
     save_dubbing_plan(job_id, revision_id, plan)
 
     invalidate_segment_tts(job_id, revision_id, segment_id)
-    await execute_dubbing_proceed(call, job_id, revision_id, state=state)
+    await execute_dubbing_proceed(call, job_id, revision_id, state=state, acknowledge=False)
 
 
 @router.callback_query(F.data.startswith("d_sha:"))
@@ -515,7 +577,7 @@ async def cb_dubbing_shorten_all_overlong_segments(call: CallbackQuery, state: F
 
     too_long_ids = {c.segment_id for c in plan.clips if c.status == "too_long"}
     if not too_long_ids:
-        await cb_dubbing_proceed(call)
+        await execute_dubbing_proceed(call, job_id, revision_id, state=state, acknowledge=False)
         return
 
     items_to_shorten = []
@@ -524,9 +586,8 @@ async def cb_dubbing_shorten_all_overlong_segments(call: CallbackQuery, state: F
             t_seg = plan.get_translation(s_seg.segment_id)
             if not t_seg:
                 continue
-            next_s = plan.segments[i + 1] if i + 1 < len(plan.segments) else None
-            avail_ms = (next_s.start_ms - s_seg.start_ms) if next_s else (plan.source_duration_ms - s_seg.start_ms)
-            avail_s = max(avail_ms / 1000.0, 1.0)
+            # Fitting uses the source speech window, not the following silence.
+            avail_s = max(s_seg.duration_ms / 1000.0, 0.001)
             items_to_shorten.append({
                 "id": s_seg.segment_id,
                 "source_text": s_seg.source_text,
@@ -551,5 +612,25 @@ async def cb_dubbing_shorten_all_overlong_segments(call: CallbackQuery, state: F
             invalidate_segment_tts(job_id, revision_id, sid)
 
     save_dubbing_plan(job_id, revision_id, plan)
-    call.data = f"d_proc:{job_id}:{revision_id}"
-    await cb_dubbing_proceed(call, state=state)
+    # Telegram callback objects are frozen; pass explicit IDs to the shared runner.
+    await execute_dubbing_proceed(call, job_id, revision_id, state=state, acknowledge=False)
+
+@router.callback_query(F.data.startswith("d_more:"))
+async def cb_dubbing_more(call: CallbackQuery) -> None:
+    _, job_id, rev, page = call.data.split(":")
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev), allowed_states=(JobState.AWAITING_SEGMENT_REVIEW,)):
+        return
+    await call.answer()
+    await render_segment_review_page(call, job_id, int(rev), int(page), advanced=True)
+
+@router.callback_query(F.data.startswith("d_spk:"))
+async def cb_dubbing_speaker_options(call: CallbackQuery) -> None:
+    _, job_id, rev = call.data.split(":")
+    if not await verify_callback_job(call, job_id, expected_rev=int(rev), allowed_states=(JobState.AWAITING_SEGMENT_REVIEW,)):
+        return
+    if not config.enable_multi_speaker_dubbing:
+        await call.answer("មុខងារនេះមិនទាន់បានបើកទេ។", show_alert=True)
+        return
+    from app.ui.speaker_keyboards import speaker_mode_choice_keyboard
+    await call.answer()
+    await safe_edit_message(call, "👥 សូមជ្រើសរបៀបសំឡេង។ បើមិនចង់បែងចែកអ្នកនិយាយ សូមជ្រើសសំឡេងមួយ។", reply_markup=speaker_mode_choice_keyboard(job_id))

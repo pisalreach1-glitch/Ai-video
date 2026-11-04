@@ -7,6 +7,8 @@ from app.config import config
 from app.domain.states import JobState
 from app.domain.features import QueueTask, JobFeature
 from app.jobs.processes import kill_process_tree
+from app.services.progress import live_progress, progress_text, stage_label
+from app.ui.keyboards import job_in_progress_keyboard
 from app.storage.jobs import job_storage
 
 logger = logging.getLogger(__name__)
@@ -134,16 +136,43 @@ class WorkerPool:
             input_digest=input_digest,
         )
 
+        previous_phase = None
+        phase_started = 0
+
+        async def update_progress(elapsed):
+            nonlocal previous_phase, phase_started
+            current = self.storage.get_job(job_id)
+            if not self.bot or not current or current.status in (
+                JobState.COMPLETED, JobState.CANCELLED, JobState.FAILED,
+                JobState.AWAITING_APPROVAL, JobState.DELIVERY_FAILED,
+            ):
+                return
+            phase = current.stage if current.stage in ("voice_converting", "separating_background") else current.status
+            if previous_phase is not None and previous_phase != phase:
+                phase_started = elapsed
+            previous_phase = phase
+            text = progress_text(stage_label(phase), elapsed - phase_started)
+            from app.services.job_messages import update
+            await update(self.bot, job.chat_id, job_id, text, job_in_progress_keyboard(job_id))
+
         try:
             from app.features.registry import feature_registry
             pipeline = feature_registry.get(job_feature)
             pipeline.validate_task_type(task_type)
-            await pipeline.run(task, self)
+            async with live_progress(update_progress, cancelled=lambda: self.is_cancelled(job_id)):
+                await pipeline.run(task, self)
         except Exception as e:
             logger.exception(f"Error executing pipeline {job_feature} for job {job_id}: {e}")
             self.storage.set_job_status(job_id, JobState.FAILED, error_message=str(e)[:300])
             self.storage.complete_task(job_id, "failed")
         finally:
             self._active_pids.pop(job_id, None)
+            current = self.storage.get_job(job_id)
+            if self.bot and current and current.status in (
+                JobState.COMPLETED, JobState.CANCELLED, JobState.FAILED,
+                JobState.AWAITING_APPROVAL, JobState.DELIVERY_FAILED,
+            ):
+                from app.services.job_messages import finish
+                await finish(self.bot, job_id, stage_label(current.status), preserve=current.status in (JobState.FAILED, JobState.DELIVERY_FAILED, JobState.CANCELLED))
 
 worker_pool = WorkerPool()

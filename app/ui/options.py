@@ -56,7 +56,9 @@ SUBTITLE_POSITIONS = {
 # Source audio options
 AUDIO_MUTE = "mute"
 AUDIO_LOW_MIX = "low_mix"
+AUDIO_BACKGROUND = "background"
 AUDIO_MODES = {
+    AUDIO_BACKGROUND: {"id": AUDIO_BACKGROUND, "label": "🎵 រក្សាតន្ត្រី និង SFX ដកសំឡេងនិយាយដើម"},
     AUDIO_MUTE: {"id": AUDIO_MUTE, "label": "🔇 ជំនួសដោយសំឡេង AI"},
     AUDIO_LOW_MIX: {"id": AUDIO_LOW_MIX, "label": "🔉 រក្សាសំឡេងដើមតិចៗ (15%)"},
 }

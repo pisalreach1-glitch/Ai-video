@@ -132,7 +132,9 @@ def _sync_transcribe(
     except ImportError:
         raise RuntimeError("faster-whisper is not installed. Please install requirements-dubbing.txt.")
 
-    model = WhisperModel(model_name, device=device, compute_type=compute_type)
+    # All configured weights are installed locally. Avoid network revision
+    # checks on every video, especially after Windows starts offline.
+    model = WhisperModel(model_name, device=device, compute_type=compute_type, local_files_only=True)
     segments, info = model.transcribe(
         audio_path,
         beam_size=5,

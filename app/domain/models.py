@@ -53,7 +53,7 @@ class VoiceSettings:
     subtitles_enabled: bool = True
     subtitle_color: str = "white"        # "white" | "yellow"
     subtitle_position: str = "bottom"    # "bottom" | "middle"
-    source_audio_mode: str = "mute"      # "mute" | "low_mix"
+    source_audio_mode: str = "background"  # "background" | "mute" | "low_mix"
     aspect_ratio: str = "original"       # "original" | "9:16" | "1:1"
     framing_mode: str = "fit"            # "fit" (pad) | "fill" (crop)
     duration_policy: str = "extend"      # "extend" | "loop" | "shorten"
@@ -83,7 +83,7 @@ class VoiceSettings:
             subtitles_enabled=bool(data.get("subtitles_enabled", True)),
             subtitle_color=str(data.get("subtitle_color", "white")),
             subtitle_position=str(data.get("subtitle_position", "bottom")),
-            source_audio_mode=str(data.get("source_audio_mode", "mute")),
+            source_audio_mode=str(data.get("source_audio_mode", "background")),
             aspect_ratio=str(data.get("aspect_ratio", "original")),
             framing_mode=str(data.get("framing_mode", "fit")),
             duration_policy=str(data.get("duration_policy", "extend")),

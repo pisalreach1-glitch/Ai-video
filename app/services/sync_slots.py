@@ -8,12 +8,16 @@ def plan_speech_slots(
     segments: Sequence[SourceSegment],
     source_duration_ms: int,
     policy: SyncPolicy,
+    pause_extensions_ms: dict[str, int] | None = None,
 ) -> dict[str, SpeechSlot]:
     if source_duration_ms <= 0 or not segments:
         raise SyncPlanningError("missing_source_timeline")
     ids = [s.segment_id for s in segments]
     if any(not i for i in ids) or len(ids) != len(set(ids)):
         raise SyncPlanningError("duplicate_or_empty_segment_id")
+    extensions = pause_extensions_ms or {}
+    if set(extensions) - set(ids) or any(type(value) is not int or not 0 <= value <= 1000 for value in extensions.values()):
+        raise SyncPlanningError("invalid_pause_extension")
     ordered = sorted(segments, key=lambda s: (s.start_ms, s.end_ms, s.segment_id))
     result = {}
     for index, segment in enumerate(ordered):
@@ -24,8 +28,13 @@ def plan_speech_slots(
             # This serial assembler cannot safely mix simultaneous dialogue.
             raise SyncPlanningError(f"overlapping_source_segments:{segment.segment_id}:{following.segment_id}")
         next_bound = following.start_ms - policy.guard_ms if following else source_duration_ms
-        target_end = min(segment.end_ms, next_bound, source_duration_ms)
-        hard_end = min(segment.end_ms + policy.end_tolerance_ms, next_bound, source_duration_ms)
+        extension = extensions.get(segment.segment_id, 0)
+        # Adaptive dubbing may use at most one second of an existing pause.
+        # Keep every original start and leave breathing space before the next voice.
+        if extension and following:
+            next_bound = min(next_bound, following.start_ms - 80)
+        target_end = min(segment.end_ms + extension, next_bound, source_duration_ms)
+        hard_end = min(segment.end_ms + extension + policy.end_tolerance_ms, next_bound, source_duration_ms)
         if target_end <= segment.start_ms:
             raise SyncPlanningError(f"empty_speech_window:{segment.segment_id}")
         result[segment.segment_id] = SpeechSlot(
